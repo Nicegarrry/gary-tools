@@ -1,0 +1,14 @@
+# Personal settings (created from settings.default.conf on install)
+settings.conf
+
+# Runtime state
+.status
+.status.tmp
+.login
+.last_sleep
+
+# Build output
+lidguard-helper
+Lidguard.app/
+
+.DS_Store
