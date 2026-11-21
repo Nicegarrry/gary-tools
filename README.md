@@ -18,10 +18,13 @@ It lives in your menu bar as a small cup icon:
 
 **Click** to turn it on or off · **Option-click** for Keep Awake · **Right-click** for the menu and Settings
 
-<p>
-  <img src="docs/settings-agents.png" width="49%" alt="Agents settings">
-  <img src="docs/settings-safety.png" width="49%" alt="Safety settings">
-</p>
+The version 1.1 settings interface matches Paste Local's CubeBit styling: translucent navy
+(`#132A45`), sky blue (`#7FB3DA`) highlights, and rust (`#B0552E`) actions. All five settings
+panes use a flat sidebar layout, quieter typography, and native controls. Reduce Transparency
+in macOS Accessibility settings switches the background to solid navy.
+
+The app has a matching flat cup icon; its menu-bar state icons stay monochrome for macOS.
+See [appearance and verification notes](docs/appearance.md).
 
 ## Install
 

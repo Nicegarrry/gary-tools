@@ -6,9 +6,15 @@ settings.conf
 .status.tmp
 .login
 .last_sleep
+.last_git_sync
+.last_git_sync.tmp
+.pull_now
 
 # Build output
 lidguard-helper
 Lidguard.app/
 
 .DS_Store
+
+# Menu-bar compiler cache and generated icon assets
+menubar/.build/

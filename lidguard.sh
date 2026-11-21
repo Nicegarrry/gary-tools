@@ -41,19 +41,23 @@ load_settings() {
   TURN_ON_AT_LOGIN=no
   CHECK_EVERY_SECONDS=2
   WAIT_BEFORE_SLEEP_SECONDS=20
+  AUTO_PULL_REPOS=yes
+  AUTO_PULL_INTERVAL_MINUTES=60
+  AUTO_PULL_DIR="$HOME/Developer"
 
   # Read only NAME=value lines (never runs anything from the file)
   if [ -f "$SETTINGS" ]; then
     local key raw value
     while IFS='=' read -r key raw; do
       key=$(echo "$key" | tr -d '[:space:]')
-      raw=$(echo "$raw" | sed 's/#.*//' | tr -d '[:space:]')
+      raw=$(echo "$raw" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
       value=$(echo "$raw" | tr '[:upper:]' '[:lower:]')
       case "$key" in
         ENABLED|KEEP_AWAKE_ALWAYS|SLEEP_IN_LOW_POWER_MODE|LEAVE_ALONE_WITH_EXTERNAL_MONITOR|\
-        LOCK_SCREEN_WHEN_LID_CLOSES|NOTIFY_ON_SLEEP|START_AT_LOGIN|TURN_ON_AT_LOGIN)
+        LOCK_SCREEN_WHEN_LID_CLOSES|NOTIFY_ON_SLEEP|START_AT_LOGIN|TURN_ON_AT_LOGIN|AUTO_PULL_REPOS)
           [[ "$value" =~ ^(yes|no)$ ]] && printf -v "$key" '%s' "$value" ;;
-        MIN_BATTERY_PERCENT|CHECK_EVERY_SECONDS|WAIT_BEFORE_SLEEP_SECONDS|WAIT_FOR_INPUT_MINUTES)
+        MIN_BATTERY_PERCENT|CHECK_EVERY_SECONDS|WAIT_BEFORE_SLEEP_SECONDS|WAIT_FOR_INPUT_MINUTES|\
+        AUTO_PULL_INTERVAL_MINUTES)
           [[ "$value" =~ ^[0-9]+$ ]] && printf -v "$key" '%s' "$value" ;;
         BATTERY_LID_CLOSED_LIMIT_HOURS)
           [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf -v "$key" '%s' "$value" ;;
@@ -61,11 +65,14 @@ load_settings() {
           [[ "$value" =~ ^(fair|serious|critical|off)$ ]] && HEAT_LIMIT=$value ;;
         KEEP_AWAKE_UNTIL)
           [[ "$raw" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$ ]] && KEEP_AWAKE_UNTIL=$raw ;;
+        AUTO_PULL_DIR)
+          [ -n "$raw" ] && AUTO_PULL_DIR="${raw/#\~/$HOME}" ;;
       esac
     done < <(grep -E '^[[:space:]]*[A-Z_]+[[:space:]]*=' "$SETTINGS")
   fi
 
   [ "$CHECK_EVERY_SECONDS" -lt 1 ] && CHECK_EVERY_SECONDS=1
+  [ "$AUTO_PULL_INTERVAL_MINUTES" -lt 5 ] && AUTO_PULL_INTERVAL_MINUTES=5
   LIMIT_SECONDS=$(awk "BEGIN {printf \"%d\", $BATTERY_LID_CLOSED_LIMIT_HOURS * 3600}")
   case "$HEAT_LIMIT" in fair) HEAT_LEVEL=1 ;; serious) HEAT_LEVEL=2 ;; critical) HEAT_LEVEL=3 ;; *) HEAT_LEVEL=99 ;; esac
 }
@@ -185,6 +192,34 @@ note_closed_lid() {
   fi
 }
 
+# Periodically fast-forward pull git repos in AUTO_PULL_DIR (non-blocking)
+maybe_git_sync() {
+  local trigger=no
+  if [ -f "$DIR/.pull_now" ]; then
+    rm -f "$DIR/.pull_now"
+    trigger=yes
+  elif [ "$AUTO_PULL_REPOS" = yes ]; then
+    local interval=$((AUTO_PULL_INTERVAL_MINUTES * 60))
+    if [ -z "$last_git_sync" ] || [ $((now - last_git_sync)) -ge "$interval" ]; then
+      trigger=yes
+    fi
+  fi
+  [ "$trigger" = yes ] || return 0
+  [ -x "$DIR/dev-pull-all.sh" ] || return 0
+  [ -d "$AUTO_PULL_DIR" ] || return 0
+  if [ -n "$git_sync_pid" ] && kill -0 "$git_sync_pid" 2>/dev/null; then
+    return 0
+  fi
+  last_git_sync=$now
+  (
+    summary=$("$DIR/dev-pull-all.sh" --always --format log --dir "$AUTO_PULL_DIR" 2>/dev/null || echo "sync failed")
+    [ -z "$summary" ] && summary="sync completed"
+    echo "$(date +%s)|$(date '+%a %H:%M')|$summary" > "$DIR/.last_git_sync.tmp" && mv "$DIR/.last_git_sync.tmp" "$DIR/.last_git_sync"
+    log "git sync: $summary"
+  ) &
+  git_sync_pid=$!
+}
+
 cleanup() { stop_caffeinate; allow_sleep; log "stopped"; exit 0; }
 trap cleanup INT TERM
 
@@ -199,6 +234,12 @@ hot_since=""              # when the Mac first got too hot (lid closed)
 was_enabled=""
 was_caffeine=""
 caff_pid=""
+git_sync_pid=""
+last_git_sync=""
+if [ -f "$DIR/.last_git_sync" ]; then
+  ts=$(cut -d'|' -f1 "$DIR/.last_git_sync" 2>/dev/null)
+  [[ "$ts" =~ ^[0-9]+$ ]] && last_git_sync=$ts
+fi
 applied_start_at_login=""
 last_lid=$(lid_closed && echo closed || echo open)   # so we only lock on a fresh close
 
@@ -255,6 +296,9 @@ while true; do
     write_status idle "Slept with lid closed — open the lid to resume"
     sleep "$CHECK_EVERY_SECONDS"; continue
   fi
+
+  # ── Periodic git repo sync (runs while awake, even when sleep-blocking is off) ──
+  maybe_git_sync
 
   # ── Keep Awake mode (like caffeinate) ──
   if [ "$KEEP_AWAKE_ALWAYS" = yes ] && [ -n "$KEEP_AWAKE_UNTIL" ]; then

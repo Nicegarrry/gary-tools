@@ -74,7 +74,7 @@ fi
 
 # ── Build ──
 say "Building (takes ~30 seconds the first time)"
-chmod +x "$DIR/lidguard.sh" "$DIR/build.sh" "$DIR/menubar/build.sh"
+chmod +x "$DIR/lidguard.sh" "$DIR/dev-pull-all.sh" "$DIR/build.sh" "$DIR/menubar/build.sh"
 "$DIR/build.sh" >/dev/null
 [ -f "$DIR/settings.conf" ] || cp "$DIR/settings.default.conf" "$DIR/settings.conf"
 

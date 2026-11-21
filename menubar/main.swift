@@ -11,6 +11,8 @@ let folder = Bundle.main.bundleURL.deletingLastPathComponent()
 let settingsURL = folder.appendingPathComponent("settings.conf")
 let statusURL = folder.appendingPathComponent(".status")
 let lastSleepURL = folder.appendingPathComponent(".last_sleep")
+let lastGitSyncURL = folder.appendingPathComponent(".last_git_sync")
+let pullNowURL = folder.appendingPathComponent(".pull_now")
 let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/lidguard.log")
 let label = "com.\(NSUserName()).lidguard"   // must match install.sh
 
@@ -67,6 +69,11 @@ final class Settings: ObservableObject {
   @Published var turnOnAtLogin = false         { didSet { save("TURN_ON_AT_LOGIN", turnOnAtLogin) } }
   @Published var checkEvery = 2                { didSet { save("CHECK_EVERY_SECONDS", checkEvery) } }
   @Published var waitBeforeSleep = 20          { didSet { save("WAIT_BEFORE_SLEEP_SECONDS", waitBeforeSleep) } }
+  @Published var autoPullRepos = true          { didSet { save("AUTO_PULL_REPOS", autoPullRepos) } }
+  @Published var autoPullIntervalMinutes = 60  { didSet { save("AUTO_PULL_INTERVAL_MINUTES", autoPullIntervalMinutes) } }
+  @Published var autoPullDir = "~/Developer"   { didSet { save("AUTO_PULL_DIR", autoPullDir) } }
+  @Published var lastGitSyncText = "Not synced yet"
+  @Published var pullingNow = false
 
   private var loading = false
 
@@ -81,21 +88,48 @@ final class Settings: ObservableObject {
     let s = SettingsFile.read()
     func bool(_ k: String, _ d: Bool) -> Bool { s[k].map { $0.lowercased() == "yes" } ?? d }
     func int(_ k: String, _ d: Int) -> Int { s[k].flatMap(Int.init) ?? d }
-    enabled               = bool("ENABLED", true)
-    keepAwake             = bool("KEEP_AWAKE_ALWAYS", false)
-    keepAwakeUntil        = s["KEEP_AWAKE_UNTIL"] ?? ""
-    waitForInput          = int("WAIT_FOR_INPUT_MINUTES", 3)
-    minBattery            = int("MIN_BATTERY_PERCENT", 20)
-    sleepInLowPower       = bool("SLEEP_IN_LOW_POWER_MODE", true)
-    heatLimit             = (s["HEAT_LIMIT"] ?? "serious").lowercased()
-    batteryLimitHours     = s["BATTERY_LID_CLOSED_LIMIT_HOURS"].flatMap(Double.init) ?? 4
-    leaveAloneWithMonitor = bool("LEAVE_ALONE_WITH_EXTERNAL_MONITOR", true)
-    lockOnLidClose        = bool("LOCK_SCREEN_WHEN_LID_CLOSES", true)
-    notifyOnSleep         = bool("NOTIFY_ON_SLEEP", true)
-    startAtLogin          = bool("START_AT_LOGIN", true)
-    turnOnAtLogin         = bool("TURN_ON_AT_LOGIN", false)
-    checkEvery            = int("CHECK_EVERY_SECONDS", 2)
-    waitBeforeSleep       = int("WAIT_BEFORE_SLEEP_SECONDS", 20)
+    enabled                 = bool("ENABLED", true)
+    keepAwake               = bool("KEEP_AWAKE_ALWAYS", false)
+    keepAwakeUntil          = s["KEEP_AWAKE_UNTIL"] ?? ""
+    waitForInput            = int("WAIT_FOR_INPUT_MINUTES", 3)
+    minBattery              = int("MIN_BATTERY_PERCENT", 20)
+    sleepInLowPower         = bool("SLEEP_IN_LOW_POWER_MODE", true)
+    heatLimit               = (s["HEAT_LIMIT"] ?? "serious").lowercased()
+    batteryLimitHours       = s["BATTERY_LID_CLOSED_LIMIT_HOURS"].flatMap(Double.init) ?? 4
+    leaveAloneWithMonitor   = bool("LEAVE_ALONE_WITH_EXTERNAL_MONITOR", true)
+    lockOnLidClose          = bool("LOCK_SCREEN_WHEN_LID_CLOSES", true)
+    notifyOnSleep           = bool("NOTIFY_ON_SLEEP", true)
+    startAtLogin            = bool("START_AT_LOGIN", true)
+    turnOnAtLogin           = bool("TURN_ON_AT_LOGIN", false)
+    checkEvery              = int("CHECK_EVERY_SECONDS", 2)
+    waitBeforeSleep         = int("WAIT_BEFORE_SLEEP_SECONDS", 20)
+    autoPullRepos           = bool("AUTO_PULL_REPOS", true)
+    autoPullIntervalMinutes = int("AUTO_PULL_INTERVAL_MINUTES", 60)
+    autoPullDir             = s["AUTO_PULL_DIR"] ?? "~/Developer"
+    refreshGitSync()
+  }
+
+  func refreshGitSync() {
+    if let raw = try? String(contentsOf: lastGitSyncURL, encoding: .utf8) {
+      let p = raw.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|", maxSplits: 2).map(String.init)
+      if p.count == 3 {
+        lastGitSyncText = "\(p[1]) — \(p[2])"
+        if pullingNow, let ts = Double(p[0]), Date().timeIntervalSince1970 - ts < 15 {
+          pullingNow = false
+        }
+        return
+      }
+    }
+    lastGitSyncText = "Not synced yet"
+  }
+
+  func triggerPullNow() {
+    pullingNow = true
+    try? "".write(to: pullNowURL, atomically: true, encoding: .utf8)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+      self?.pullingNow = false
+      self?.refreshGitSync()
+    }
   }
 
   /// Keep Awake on, optionally until a time (nil = until turned off)
@@ -131,72 +165,39 @@ func next7am() -> Date {
 
 let timeOnly: DateFormatter = { let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short; return f }()
 
-// MARK: - Settings window (navy / sapphire theme, tabbed)
-
-extension Color {
-  init(hex: UInt32) {
-    self.init(.sRGB, red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255,
-              blue: Double(hex & 0xff) / 255, opacity: 1)
-  }
-}
-
-enum Theme {
-  static let background = Color(hex: 0x0B1F36)   // sapphire-950 (navy)
-  static let card       = Color(hex: 0x132A45)   // sapphire-800
-  static let line       = Color(hex: 0x1E4C80).opacity(0.55) // sapphire-700
-  static let accent     = Color(hex: 0x306FA8)   // sapphire-600
-  static let accentSoft = Color(hex: 0x7FB3DA)   // sapphire-300
-  static let text       = Color.white.opacity(0.92)
-  static let muted      = Color(hex: 0x7FB3DA).opacity(0.75)
-  static let nsBackground = NSColor(srgbRed: 0x0B / 255, green: 0x1F / 255, blue: 0x36 / 255, alpha: 1)
-}
+// MARK: - Settings window (CubeBit navy / sky / rust)
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-  case agents = "Agents", keepAwake = "Keep Awake", safety = "Safety", lid = "Lid & Login"
+  case agents = "Agents", keepAwake = "Keep Awake", safety = "Safety", lid = "Lid & Login", repos = "Repos"
   var id: String { rawValue }
   var symbol: String {
     switch self {
     case .agents: return "cpu"
-    case .keepAwake: return "cup.and.heat.waves.fill"
+    case .keepAwake: return "cup.and.heat.waves"
     case .safety: return "shield.lefthalf.filled"
     case .lid: return "laptopcomputer"
+    case .repos: return "arrow.triangle.2.circlepath"
+    }
+  }
+  var subtitle: String {
+    switch self {
+    case .agents: return "Give your agents room to finish."
+    case .keepAwake: return "A little more time, on your terms."
+    case .safety: return "Keep an eye on the things that matter."
+    case .lid: return "Settle into the way you work."
+    case .repos: return "Keep your projects close to their latest."
     }
   }
 }
 
-struct Card<Content: View>: View {
+struct SettingsSection<Content: View>: View {
   let title: String
   @ViewBuilder var content: Content
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text(title.uppercased())
-        .font(.system(size: 10.5, weight: .semibold)).tracking(1.4)
-        .foregroundStyle(Theme.accentSoft)
-      VStack(alignment: .leading, spacing: 12) { content }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.card))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line, lineWidth: 1))
-    }
-  }
-}
-
-/// Sapphire capsule switch (drawn in SwiftUI so it matches the theme)
-struct SapphireSwitch: View {
-  @Binding var isOn: Bool
-  @Environment(\.isEnabled) var enabled
-  var body: some View {
-    ZStack(alignment: isOn ? .trailing : .leading) {
-      Capsule().fill(isOn ? Theme.accent : Color.white.opacity(0.14))
-        .overlay(Capsule().stroke(isOn ? Theme.accentSoft.opacity(0.5) : Theme.line, lineWidth: 1))
-      Circle().fill(Color.white).padding(2.5).shadow(color: .black.opacity(0.3), radius: 1, y: 1)
-    }
-    .frame(width: 38, height: 22)
-    .opacity(enabled ? 1 : 0.4)
-    .animation(.easeOut(duration: 0.15), value: isOn)
-    .onTapGesture { if enabled { isOn.toggle() } }
-    .accessibilityAddTraits(.isButton)
-    .accessibilityValue(isOn ? "On" : "Off")
+    VStack(alignment: .leading, spacing: 18) {
+      Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.text)
+      VStack(alignment: .leading, spacing: 18) { content }
+    }.frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
@@ -205,57 +206,61 @@ struct SwitchRow: View {
   var note: String? = nil
   @Binding var isOn: Bool
   var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title).foregroundStyle(Theme.text)
-        if let note { Text(note).font(.caption).foregroundStyle(Theme.muted) }
+    HStack(spacing: 24) {
+      VStack(alignment: .leading, spacing: 6) {
+        Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.text)
+        if let note { Text(note).font(.system(size: 12)).lineSpacing(3).foregroundStyle(Theme.secondary) }
       }
-      Spacer(minLength: 8)
-      SapphireSwitch(isOn: $isOn)
-    }
+      Spacer(minLength: 0)
+      Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(Theme.rust)
+    }.padding(.vertical, 3)
   }
 }
 
-/// "Title ........ value  [ − | + ]"
 struct StepRow<V: Strideable & Comparable>: View where V.Stride: SignedNumeric {
   let title: String
   let value: String
   @Binding var number: V
   let range: ClosedRange<V>
   let step: V.Stride
+  @Environment(\.isEnabled) private var enabled
   var body: some View {
-    HStack(spacing: 10) {
-      Text(title).foregroundStyle(Theme.text)
-      Spacer()
-      Text(value).monospacedDigit().foregroundStyle(Theme.accentSoft)
-      HStack(spacing: 0) {
-        stepButton("minus", enabled: number > range.lowerBound) { number = max(range.lowerBound, number.advanced(by: -step)) }
-        Rectangle().fill(Theme.line).frame(width: 1, height: 14)
-        stepButton("plus", enabled: number < range.upperBound) { number = min(range.upperBound, number.advanced(by: step)) }
+    HStack(spacing: 16) {
+      Text(title).font(.system(size: 13)).foregroundStyle(Theme.text)
+      Spacer(minLength: 12)
+      Text(value).font(.system(size: 13)).monospacedDigit().foregroundStyle(Theme.sky)
+      HStack(spacing: 6) {
+        stepButton("minus", label: "Decrease", enabled: number > range.lowerBound) {
+          number = max(range.lowerBound, number.advanced(by: -step))
+        }
+        stepButton("plus", label: "Increase", enabled: number < range.upperBound) {
+          number = min(range.upperBound, number.advanced(by: step))
+        }
       }
-      .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
-      .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.line, lineWidth: 1))
-    }
+    }.padding(.vertical, 3).opacity(enabled ? 1 : 0.4)
   }
-
-  func stepButton(_ symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+  private func stepButton(_ symbol: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
     Button(action: action) {
-      Image(systemName: symbol).font(.system(size: 10, weight: .bold))
-        .frame(width: 26, height: 22).contentShape(Rectangle())
-        .foregroundStyle(enabled ? Theme.text : Theme.muted.opacity(0.4))
+      Image(systemName: symbol).font(.system(size: 9, weight: .medium))
+        .foregroundStyle(Theme.text).frame(width: 24, height: 24)
+        .background(.white.opacity(0.06), in: Circle()).contentShape(Circle())
     }
-    .buttonStyle(.plain).disabled(!enabled)
+    .buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.35)
+    .accessibilityLabel("\(label) \(title.lowercased())")
   }
 }
 
 struct Note: View {
   let text: String
-  var body: some View { Text(text).font(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
+  var body: some View {
+    Text(text).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+      .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+  }
 }
 
 struct SettingsView: View {
   @ObservedObject var s: Settings
-  @State var tab: SettingsTab = .agents
+  @LocalState var tab: SettingsTab = .agents
 
   var keepAwakeStatus: String {
     guard s.keepAwake else { return "Off" }
@@ -264,56 +269,83 @@ struct SettingsView: View {
   }
 
   var body: some View {
-    VStack(spacing: 0) {
-      // Tab bar
-      HStack(spacing: 6) {
-        ForEach(SettingsTab.allCases) { t in
-          Button { tab = t } label: {
-            VStack(spacing: 4) {
-              Image(systemName: t.symbol).font(.system(size: 15))
-              Text(t.rawValue).font(.system(size: 11, weight: .medium))
+    HStack(spacing: 0) {
+      sidebar
+      VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 8) {
+          Text(tab.rawValue).font(.system(size: 28, weight: .regular))
+          Text(tab.subtitle).font(.system(size: 13)).foregroundStyle(Theme.secondary)
+        }.padding(.horizontal, 32).padding(.top, 48).padding(.bottom, 28)
+        ScrollView {
+          VStack(alignment: .leading, spacing: 26) {
+            switch tab {
+            case .agents: agents
+            case .keepAwake: keepAwakeTab
+            case .safety: safety
+            case .lid: lidAndLogin
+            case .repos: reposTab
             }
-            .frame(maxWidth: .infinity).padding(.vertical, 8)
-            .foregroundStyle(tab == t ? Color.white : Theme.muted)
-            .background(RoundedRectangle(cornerRadius: 8).fill(tab == t ? Theme.accent : Color.clear))
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
+          }.padding(.horizontal, 32).padding(.bottom, 28)
         }
+        Hairline().padding(.horizontal, 32)
+        HStack(spacing: 8) {
+          Image(systemName: "checkmark").foregroundStyle(Theme.sky).font(.system(size: 9, weight: .medium))
+          Text("Changes save automatically").font(.system(size: 11)).foregroundStyle(Theme.muted)
+          Spacer()
+          Text("Applied within a few seconds").font(.system(size: 10)).foregroundStyle(Theme.muted)
+        }.padding(.horizontal, 32).padding(.vertical, 20)
       }
-      .padding(.horizontal, 16).padding(.top, 34).padding(.bottom, 12)
-
-      Rectangle().fill(Theme.line).frame(height: 1)
-
-      VStack(alignment: .leading, spacing: 18) {
-        switch tab {
-        case .agents: agents
-        case .keepAwake: keepAwakeTab
-        case .safety: safety
-        case .lid: lidAndLogin
-        }
-        Spacer(minLength: 0)
-        Note(text: "Changes save automatically and apply within a few seconds.")
-      }
-      .padding(18)
-      .frame(height: 400, alignment: .top)
     }
-    .frame(width: 460)
-    .background(Theme.background)
-    .environment(\.colorScheme, .dark)
+    .foregroundStyle(Theme.text).tint(Theme.rust)
+    // One full-window material, including the native traffic-light/title-bar area.
+    // AppKit supplies the outer window corners; a second rounded panel leaves a seam.
+    .background(GlassBackground(radius: 0)).preferredColorScheme(.dark)
+    .ignoresSafeArea(.container, edges: .top)
+    .frame(width: 800, height: 610)
+  }
+
+  private var sidebar: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 9) {
+        Image(systemName: "cup.and.saucer").font(.system(size: 16, weight: .regular)).foregroundStyle(Theme.sky)
+        Text("Lidguard").font(.system(size: 14, weight: .medium))
+      }.padding(.horizontal, 22).padding(.top, 55).padding(.bottom, 34)
+      ForEach(SettingsTab.allCases) { item in
+        Button { tab = item } label: {
+          HStack(spacing: 11) {
+            Capsule().fill(tab == item ? Theme.rust : .clear).frame(width: 3, height: 18)
+            Image(systemName: item.symbol).font(.system(size: 13)).frame(width: 16)
+              .foregroundStyle(tab == item ? Theme.sky : Theme.muted)
+            Text(item.rawValue).font(.system(size: 13, weight: tab == item ? .medium : .regular))
+              .foregroundStyle(tab == item ? Theme.text : Theme.secondary)
+            Spacer()
+          }.padding(.vertical, 10).padding(.trailing, 18).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(tab == item ? .isSelected : [])
+      }
+      Spacer()
+      VStack(alignment: .leading, spacing: 7) {
+        Label(s.keepAwake ? "Keep Awake on" : s.enabled ? "Watching agents" : "Switched off",
+              systemImage: s.keepAwake ? "cup.and.heat.waves" : s.enabled ? "cpu" : "moon")
+          .font(.system(size: 10)).foregroundStyle(Theme.sky)
+        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1")")
+          .font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted)
+      }.padding(22)
+    }.frame(width: 190).frame(maxHeight: .infinity, alignment: .topLeading)
   }
 
   @ViewBuilder var agents: some View {
-    Card(title: "Herdr agents") {
+    SettingsSection(title: "Herdr agents") {
       SwitchRow(title: "Keep Mac awake while agents are working",
                 note: "Click the menu bar icon to switch this on or off.", isOn: $s.enabled)
     }
-    Card(title: "When an agent asks you something") {
+    Hairline()
+    SettingsSection(title: "When an agent asks you something") {
       StepRow(title: "Stay awake for", value: s.waitForInput == 0 ? "Don't wait" : "\(s.waitForInput) min",
               number: $s.waitForInput, range: 0...5, step: 1)
       Note(text: "Gives you time to answer remotely before the Mac sleeps.")
     }
-    Card(title: "Timing") {
+    Hairline()
+    SettingsSection(title: "Timing") {
       StepRow(title: "Check every", value: "\(s.checkEvery) s", number: $s.checkEvery, range: 1...60, step: 1)
       StepRow(title: "Wait after agents stop", value: "\(s.waitBeforeSleep) s",
               number: $s.waitBeforeSleep, range: 0...300, step: 5)
@@ -321,48 +353,37 @@ struct SettingsView: View {
   }
 
   @ViewBuilder var keepAwakeTab: some View {
-    Card(title: "Keep Awake") {
+    SettingsSection(title: "Keep Awake") {
       SwitchRow(title: "Keep the Mac on no matter what", note: keepAwakeStatus, isOn: Binding(
         get: { s.keepAwake }, set: { $0 ? s.startKeepAwake(until: nil) : s.stopKeepAwake() }))
       Note(text: "Like caffeinate: the screen stays on and the lid can be closed. Ignores the battery and time rules; the heat cut-off still applies.")
     }
-    Card(title: "Turn on for") {
-      HStack(spacing: 8) {
+    Hairline()
+    SettingsSection(title: "Turn on for") {
+      HStack(spacing: 10) {
         durationButton("1 hour") { s.startKeepAwake(until: Date().addingTimeInterval(3600)) }
         durationButton("3 hours") { s.startKeepAwake(until: Date().addingTimeInterval(3 * 3600)) }
         durationButton("Until 7am") { s.startKeepAwake(until: next7am()) }
         durationButton("Until off") { s.startKeepAwake(until: nil) }
       }
-      Note(text: "Tip: Option-click the menu bar icon to toggle Keep Awake.")
+      Note(text: "Option-click the menu bar icon to toggle Keep Awake.")
     }
   }
 
   func durationButton(_ title: String, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      Text(title).font(.system(size: 12, weight: .medium))
-        .frame(maxWidth: .infinity).padding(.vertical, 7)
-        .foregroundStyle(Theme.text)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.accent, lineWidth: 1))
-    }
-    .buttonStyle(.plain)
+    Button(action: action) { Text(title).frame(maxWidth: .infinity) }.buttonStyle(FlatButtonStyle())
   }
 
   @ViewBuilder var safety: some View {
-    Card(title: "Let the Mac sleep anyway when") {
+    SettingsSection(title: "Let the Mac sleep anyway when") {
       StepRow(title: "Battery is below", value: "\(s.minBattery)%", number: $s.minBattery, range: 5...90, step: 5)
       SwitchRow(title: "Low Power Mode is on", isOn: $s.sleepInLowPower)
       HStack {
-        Text("Running hot with the lid closed").foregroundStyle(Theme.text)
-        Spacer()
-        Picker("", selection: $s.heatLimit) {
-          Text("Fair").tag("fair")
-          Text("Serious").tag("serious")
-          Text("Critical").tag("critical")
-          Text("Never").tag("off")
-        }
-        .labelsHidden().fixedSize()
-      }
+        Text("Running hot with the lid closed").font(.system(size: 13))
+        Spacer(minLength: 12)
+        ChoiceMenu(label: "Heat cut-off", selection: $s.heatLimit,
+                   options: [("Fair", "fair"), ("Serious", "serious"), ("Critical", "critical"), ("Never", "off")])
+      }.padding(.vertical, 3)
       StepRow(title: "Lid closed on battery for over", value: "\(s.hoursString) h",
               number: $s.batteryLimitHours, range: 0.5...24, step: 0.5)
       Note(text: "Plugged in, there's no time limit. Heat: Serious is recommended.")
@@ -370,19 +391,60 @@ struct SettingsView: View {
   }
 
   @ViewBuilder var lidAndLogin: some View {
-    Card(title: "Lid") {
+    SettingsSection(title: "Lid") {
       SwitchRow(title: "Lock screen when the lid closes", isOn: $s.lockOnLidClose)
       SwitchRow(title: "Leave alone when a monitor is connected",
                 note: "Desk setup with the lid shut: never lock or force sleep.", isOn: $s.leaveAloneWithMonitor)
       SwitchRow(title: "Notify me when it puts the Mac to sleep", isOn: $s.notifyOnSleep)
     }
-    Card(title: "Login") {
+    Hairline()
+    SettingsSection(title: "Login") {
       SwitchRow(title: "Start at login", isOn: $s.startAtLogin)
       SwitchRow(title: "Turn on automatically at login",
                 note: s.turnOnAtLogin ? "Keeps whatever on/off state it had."
                                       : "Starts switched off — click the icon to turn it on.",
                 isOn: $s.turnOnAtLogin)
         .disabled(!s.startAtLogin)
+    }
+  }
+
+  var intervalLabel: String {
+    let m = s.autoPullIntervalMinutes
+    let h = m / 60, rem = m % 60
+    if h > 0 && rem > 0 { return "\(h)h \(rem)m" }
+    if h > 0 { return "\(h) h" }
+    return "\(m) min"
+  }
+
+  @ViewBuilder var reposTab: some View {
+    SettingsSection(title: "Git auto-pull") {
+      SwitchRow(title: "Auto-pull git repos while awake",
+                note: "Runs git pull --ff-only in the background. Never overwrites uncommitted work.",
+                isOn: $s.autoPullRepos)
+      StepRow(title: "Pull every", value: intervalLabel,
+              number: $s.autoPullIntervalMinutes, range: 15...360, step: 15)
+        .disabled(!s.autoPullRepos)
+      Note(text: "Runs even when sleep-blocking is off, as long as the Mac is awake.")
+    }
+    Hairline()
+    SettingsSection(title: "Status") {
+      HStack(alignment: .firstTextBaseline, spacing: 18) {
+        Text("Folder").font(.system(size: 13))
+        Spacer(minLength: 0)
+        Text(s.autoPullDir).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.sky)
+          .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+      }
+      HStack(alignment: .top, spacing: 18) {
+        Text("Last sync").font(.system(size: 13))
+        Spacer(minLength: 0)
+        Text(s.lastGitSyncText).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+          .lineSpacing(3).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+      }
+      HStack {
+        Spacer()
+        Button(s.pullingNow ? "Pulling…" : "Pull Now") { s.triggerPullNow() }
+          .buttonStyle(FlatButtonStyle(primary: true)).disabled(s.pullingNow)
+      }
     }
   }
 }
@@ -401,6 +463,7 @@ final class App: NSObject, NSApplicationDelegate {
   var window: NSWindow?
 
   func applicationDidFinishLaunching(_ n: Notification) {
+    NSApp.appearance = NSAppearance(named: .darkAqua)
     ensureLidguardRunning()
 
     statusLine.isEnabled = false
@@ -423,6 +486,7 @@ final class App: NSObject, NSApplicationDelegate {
     menu.addItem(caffeineItem)
 
     menu.addItem(.separator())
+    menu.addItem(withTitle: "Pull Repos Now", action: #selector(pullReposNow), keyEquivalent: "").target = self
     menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
     menu.addItem(withTitle: "Open Log", action: #selector(openLog), keyEquivalent: "").target = self
     menu.addItem(.separator())
@@ -480,6 +544,7 @@ final class App: NSObject, NSApplicationDelegate {
   @objc func keepAwake3h() { settings.startKeepAwake(until: Date().addingTimeInterval(3 * 3600)) }
   @objc func keepAwakeUntil7() { settings.startKeepAwake(until: next7am()) }
   @objc func keepAwakeOff() { settings.stopKeepAwake() }
+  @objc func pullReposNow() { settings.triggerPullNow() }
 
   func refresh() {
     let s = SettingsFile.read()
@@ -527,17 +592,21 @@ final class App: NSObject, NSApplicationDelegate {
     caffeineItem.title = keepAwake
       ? (until.map { "Keep Awake (until \(timeOnly.string(from: $0)))" } ?? "Keep Awake (on)")
       : "Keep Awake"
+    settings.refreshGitSync()
   }
 
   @objc func openSettings() {
     settings.reload()
     if window == nil {
-      let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(s: settings)))
+      // Configure full-size content before attaching SwiftUI. Changing it afterward
+      // preserves the original title-bar inset and leaves an uncovered strip above it.
+      let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 610),
+                       styleMask: [.titled, .closable, .fullSizeContentView],
+                       backing: .buffered, defer: false)
       w.title = "lidguard"
-      w.styleMask = [.titled, .closable, .fullSizeContentView]
-      w.titlebarAppearsTransparent = true
-      w.backgroundColor = Theme.nsBackground
-      w.appearance = NSAppearance(named: .darkAqua)
+      Theme.prepare(w)
+      w.contentView = NSHostingView(rootView: SettingsView(s: settings))
+      w.setContentSize(NSSize(width: 800, height: 610))
       w.isReleasedWhenClosed = false
       w.center()
       window = w
