@@ -21,13 +21,28 @@ final class VisibilityPolicyTests: XCTestCase {
 
     func testHoverGateRequiresDwellAndResetsOnExit() {
         var gate = HoverRevealGate()
-        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 0))
-        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 0.2))
-        XCTAssertTrue(gate.update(inside: true, collapsed: true, enabled: true, now: 0.4))
+        // First transition to collapsed while pointer is outside menu bar
+        XCTAssertFalse(gate.update(inside: false, collapsed: true, enabled: true, now: 0))
+        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 0.1))
+        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 0.3))
+        XCTAssertTrue(gate.update(inside: true, collapsed: true, enabled: true, now: 0.5))
         XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 1.0))
         XCTAssertFalse(gate.update(inside: false, collapsed: true, enabled: true, now: 1.1))
         XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 1.2))
         XCTAssertTrue(gate.update(inside: true, collapsed: true, enabled: true, now: 1.6))
+    }
+
+    func testCollapseWhilePointerInMenuBarWaitsForExitBeforeHoverReveal() {
+        var gate = HoverRevealGate()
+        // Pointer clicks arrow while on menu bar -> transitions to collapsed with inside == true
+        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 0))
+        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 0.5))
+        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 5.0))
+        // Pointer moves down off menu bar
+        XCTAssertFalse(gate.update(inside: false, collapsed: true, enabled: true, now: 5.1))
+        // Pointer moves back up to menu bar -> now hover reveal works after 0.35s dwell
+        XCTAssertFalse(gate.update(inside: true, collapsed: true, enabled: true, now: 5.2))
+        XCTAssertTrue(gate.update(inside: true, collapsed: true, enabled: true, now: 5.6))
     }
 
     func testRevealInvalidatesLateActivationCompletion() {

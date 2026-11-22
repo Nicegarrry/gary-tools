@@ -38,11 +38,30 @@ public struct VisibilityPolicy: Codable, Equatable {
 public struct HoverRevealGate {
     private var enteredAt: TimeInterval?
     private var fired = false
+    private var wasCollapsed = false
+    private var waitingForExit = false
     public init() {}
+
     public mutating func update(inside: Bool, collapsed: Bool, enabled: Bool, now: TimeInterval) -> Bool {
-        guard inside, collapsed, enabled else {
+        if collapsed && !wasCollapsed && inside {
+            // User just clicked the menu bar arrow to collapse; require pointer to leave first.
+            waitingForExit = true
+        }
+        wasCollapsed = collapsed
+
+        guard collapsed, enabled else {
             enteredAt = nil
             fired = false
+            waitingForExit = false
+            return false
+        }
+        if !inside {
+            enteredAt = nil
+            fired = false
+            waitingForExit = false
+            return false
+        }
+        if waitingForExit {
             return false
         }
         if enteredAt == nil { enteredAt = now }
