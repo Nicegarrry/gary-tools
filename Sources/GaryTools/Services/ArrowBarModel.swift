@@ -182,190 +182,58 @@ final class ApplicationRegistration {
         if success { registered[bundleID] = actual }
         return success
     }
+
+    func prepare(ownBundleID: String, pinnedIDs: Set<String>, catalog: [CatalogApp]) -> Set<String> {
+        var paths = [String: URL]()
+        paths[ownBundleID] = Bundle.main.bundleURL
+        for app in catalog where pinnedIDs.contains(app.id) {
+            paths[app.id] = URL(fileURLWithPath: app.path)
+        }
+        for app in NSWorkspace.shared.runningApplications {
+            guard let id = app.bundleIdentifier else { continue }
+            if let owner = AppCatalog.ownerBundle(for: app), let ownerID = owner.bundleIdentifier,
+               pinnedIDs.contains(ownerID) {
+                paths[ownerID] = owner.bundleURL
+            }
+            if pinnedIDs.contains(id), let url = app.bundleURL { paths[id] = url }
+        }
+        var failures = Set<String>()
+        for (id, url) in paths where !register(url, bundleID: id) { failures.insert(id) }
+        return failures
+    }
 }
 
-// MARK: - Native Visibility Store & Controller
+// MARK: - Visibility Restriction Backend (MenuBarClientCore)
 
 protocol VisibilityHandle: AnyObject { func invalidate() }
 
-private final class NativeHandle: VisibilityHandle {
-    private var restore: (() -> Void)?
-    init(_ restore: @escaping () -> Void) { self.restore = restore }
-    func invalidate() { let action = restore; restore = nil; action?() }
+private final class AssessmentHandle: VisibilityHandle {
+    private var restriction: GTAssessmentRestriction?
+    init(_ restriction: GTAssessmentRestriction) { self.restriction = restriction }
+    func invalidate() {
+        restriction?.invalidate()
+        restriction = nil
+    }
     deinit { invalidate() }
 }
 
 struct RestrictionBackend {
     var isAvailable: Bool
-    var activate: ([String], @escaping (Error?) -> Void) -> VisibilityHandle?
+    var activate: ([String], @escaping @MainActor @Sendable (Error?) -> Void) -> VisibilityHandle?
     @MainActor static var live: Self {
-        Self(isAvailable: NativeVisibilityStore.shared.available) { bundles, completion in
-            NativeVisibilityStore.shared.activate(allowing: bundles, completion: completion)
+        Self(isAvailable: GTAssessmentRestriction.isAvailable()) { bundles, completion in
+            let restriction = GTAssessmentRestriction()
+            restriction.activate(
+                withAllowedSystemItems: GTAssessmentRestriction.allSystemItems(),
+                allowedBundleIdentifiers: bundles,
+                completion: { error in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated { completion(error) }
+                    }
+                }
+            )
+            return AssessmentHandle(restriction)
         }
-    }
-}
-
-@MainActor
-final class NativeVisibilityStore: ObservableObject {
-    static let shared = NativeVisibilityStore()
-    @Published private(set) var hasAccess = false
-    @Published private(set) var lastError: String?
-    let available = GTNativePreferences.isAvailable()
-    private let defaults = UserDefaults.standard
-    private let fileURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist")
-    private var scopedURL: URL?
-    private var generation = 0
-    private var originals: [String: Bool] = [:]
-    private var journalValid = true
-    private let journalKey = "nativeVisibilityOriginals.v1"
-    var hasPendingRestoration: Bool { !originals.isEmpty }
-
-    private init() {
-        if let existing = defaults.object(forKey: journalKey) {
-            if let data = existing as? Data, let values = try? JSONDecoder().decode([String: Bool].self, from: data) {
-                originals = values
-            } else {
-                journalValid = false
-                lastError = "The visibility recovery record is unreadable. No app switches will be changed."
-            }
-        }
-        if let bookmark = defaults.data(forKey: "nativeMenuBarAccessBookmark") {
-            var stale = false
-            if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
-                                 relativeTo: nil, bookmarkDataIsStale: &stale) {
-                _ = url.startAccessingSecurityScopedResource()
-                scopedURL = url
-                if stale { saveBookmark(url) }
-            }
-        }
-        refreshAccess()
-        if !originals.isEmpty { restoreAll() }
-    }
-
-    private var containerPath: String {
-        fileURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
-    }
-
-    func refreshAccess() {
-        hasAccess = (try? Data(contentsOf: fileURL)) != nil
-    }
-
-    func requestAccess() {
-        let panel = NSOpenPanel()
-        panel.title = "Allow per-app menu bar control"
-        panel.message = "Select group.com.apple.controlcenter.plist to let Gary Tools change only third-party application icon switches while keeping macOS Live Activities intact."
-        panel.prompt = "Allow Access"
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = fileURL.deletingLastPathComponent()
-        panel.nameFieldStringValue = fileURL.lastPathComponent
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let selected = panel.url,
-              selected.resolvingSymlinksInPath() == fileURL.resolvingSymlinksInPath() else { return }
-        scopedURL?.stopAccessingSecurityScopedResource()
-        _ = selected.startAccessingSecurityScopedResource()
-        scopedURL = selected
-        saveBookmark(selected)
-        refreshAccess()
-        if hasAccess { restoreAll() }
-    }
-
-    private func saveBookmark(_ url: URL) {
-        if let bookmark = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil) {
-            defaults.set(bookmark, forKey: "nativeMenuBarAccessBookmark")
-        }
-    }
-
-    private func read() throws -> (NativeAppSwitches, Bool) {
-        guard available else { throw failure("Per-app menu bar control is unavailable on this macOS version.") }
-        guard journalValid else { throw failure("The recovery record is unreadable. No switches were changed.") }
-        refreshAccess()
-        guard hasAccess else { throw failure("Allow per-app menu bar control first. All icons remain revealed.") }
-        guard let value = GTNativePreferences.readTrackedApplications(inContainer: containerPath) else {
-            throw failure("macOS’s app visibility list couldn’t be read. No switches were changed.")
-        }
-        let encoded = value is Data
-        let plist: Any
-        if let data = value as? Data { plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) }
-        else { plist = value }
-        guard let entries = plist as? [Any] else { throw NativeSwitchError.unsupportedFormat }
-        return (try NativeAppSwitches(entries: entries), encoded)
-    }
-
-    private func persist(_ journal: [String: Bool]) throws {
-        defaults.set(try JSONEncoder().encode(journal), forKey: journalKey)
-        guard defaults.synchronize() else { throw failure("Couldn’t save icon recovery information. No new switches will be changed.") }
-    }
-
-    private func transaction(allowing: Set<String>?) throws {
-        let (before, encoded) = try read()
-        let previousOriginals = originals
-        var changed = before
-        var remaining = originals
-        changed.apply(allowing: allowing, ownID: ArrowBarModel.bundleID, originals: &remaining)
-        var writeAhead = originals
-        for (id, value) in remaining { writeAhead[id] = value }
-        try persist(writeAhead)
-        originals = writeAhead
-        let value: Any = encoded
-            ? try PropertyListSerialization.data(fromPropertyList: changed.entries, format: .binary, options: 0)
-            : changed.entries
-        let beforeData = try PropertyListSerialization.data(fromPropertyList: before.entries, format: .binary, options: 0)
-        let afterData = try PropertyListSerialization.data(fromPropertyList: changed.entries, format: .binary, options: 0)
-        if beforeData != afterData {
-            let (latest, _) = try read()
-            guard NSArray(array: latest.entries).isEqual(to: before.entries) else {
-                originals = previousOriginals
-                try persist(previousOriginals)
-                throw failure("The menu bar changed during the update. Nothing new was changed; try again.")
-            }
-            guard GTNativePreferences.writeTrackedApplications(value, inContainer: containerPath) else {
-                throw failure("macOS didn’t save the icon switches. Use Show all to retry restoring them.")
-            }
-            let (verified, _) = try read()
-            let expected = try NativeAppSwitches(entries: changed.entries).allowedStates
-            guard expected.allSatisfy({ verified.allowedStates[$0.key] == $0.value }) else {
-                throw failure("macOS didn’t retain the icon switches. Use Show all to restore them.")
-            }
-        }
-        try persist(remaining)
-        originals = remaining
-        lastError = nil
-    }
-
-    func activate(allowing bundles: [String], completion: @escaping (Error?) -> Void) -> VisibilityHandle? {
-        do {
-            try transaction(allowing: Set(bundles))
-            generation += 1
-            let activeGeneration = generation
-            DispatchQueue.main.async { completion(nil) }
-            return NativeHandle { [weak self] in
-                guard let self, self.generation == activeGeneration else { return }
-                self.restoreAll()
-            }
-        } catch {
-            let failureMessage = error.localizedDescription
-            restoreAll()
-            if lastError == nil { lastError = failureMessage }
-            DispatchQueue.main.async { completion(error) }
-            return nil
-        }
-    }
-
-    func restoreAll() {
-        generation += 1
-        guard !originals.isEmpty else {
-            if journalValid && hasAccess { lastError = nil }
-            return
-        }
-        do { try transaction(allowing: nil) }
-        catch { lastError = "Icons still need restoring: \(error.localizedDescription)" }
-    }
-
-    private func failure(_ message: String) -> NSError {
-        NSError(domain: "local.nicegary.GaryTools.NativeVisibility", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 
@@ -456,9 +324,29 @@ final class VisibilityController: ObservableObject {
 final class ArrowBarModel: ObservableObject {
     static let bundleID = "local.nicegary.GaryTools"
 
+    /// Apple system and Live Activity bundle IDs always kept in the allowlist.
+    private static let appleSystemBundles: Set<String> = [
+        "com.apple.controlcenter",
+        "com.apple.systemuiserver",
+        "com.apple.Spotlight",
+        "com.apple.Siri",
+        "com.apple.MediaRemoteUIService",
+        "com.apple.ClockAngel",
+        "com.apple.chrono.WidgetRenderer-Activities",
+        "com.apple.InCallService",
+        "com.apple.ScreenContinuity",
+        "com.apple.screencaptureui",
+        "com.apple.Sharing.AirDropUI",
+        "com.apple.menuextra.TimeMachine",
+        "com.apple.menuextra.vpn",
+        "com.apple.weather.menu",
+        "com.apple.musicrecognition.mac",
+        "com.apple.printcenter"
+    ]
+
     let catalog = AppCatalog(ownID: bundleID)
     let visibility = VisibilityController()
-    let nativeVisibility = NativeVisibilityStore.shared
+    let registration = ApplicationRegistration()
 
     @Published var enabled: Bool {
         didSet {
@@ -482,13 +370,21 @@ final class ArrowBarModel: ObservableObject {
 
     init() {
         enabled = UserDefaults.standard.object(forKey: "arrowBarEnabled") as? Bool ?? true
-        policy = UserDefaults.standard.data(forKey: "policy")
+        var loadedPolicy = UserDefaults.standard.data(forKey: "policy")
             .flatMap { try? JSONDecoder().decode(VisibilityPolicy.self, from: $0) } ?? VisibilityPolicy()
+        // Prune retired standalone bundle IDs that were consolidated into Gary Tools.
+        let retired: Set<String> = ["local.pastelocal.app", "local.lidguard.menubar", "local.np.ArrowBar"]
+        if !loadedPolicy.pinnedBundleIDs.isDisjoint(with: retired) {
+            loadedPolicy.pinnedBundleIDs.subtract(retired)
+            if let data = try? JSONEncoder().encode(loadedPolicy) {
+                UserDefaults.standard.set(data, forKey: "policy")
+            }
+        }
+        policy = loadedPolicy
         startCollapsed = UserDefaults.standard.object(forKey: "startCollapsed") as? Bool ?? false
         expandOnHover = UserDefaults.standard.object(forKey: "expandOnHover") as? Bool ?? true
         showRecoveryButton = UserDefaults.standard.object(forKey: "showRecoveryButton") as? Bool ?? true
 
-        nativeVisibility.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &tokens)
         catalog.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &tokens)
         visibility.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &tokens)
 
@@ -539,20 +435,22 @@ final class ArrowBarModel: ObservableObject {
 
     func finishEditing() {
         editing = false
-        if nativeVisibility.hasAccess && enabled {
+        if enabled && visibility.available {
             applyCollapsed()
         }
     }
 
     func applyCollapsed(refresh: Bool = false) {
         guard enabled, conflictingManagers.isEmpty else { return }
+        _ = registration.prepare(ownBundleID: Self.bundleID, pinnedIDs: policy.pinnedBundleIDs, catalog: catalog.apps)
         let known = catalog.apps.map { AppIdentity(owner: $0.id, bundleIDs: $0.bundleIDs) }
-        visibility.collapse(allowing: policy.allowlist(apps: AppCatalog.identities() + known, ownBundleID: Self.bundleID), refresh: refresh)
+        let allowed = policy.allowlist(apps: AppCatalog.identities() + known, ownBundleID: Self.bundleID)
+            .union(Self.appleSystemBundles)
+        visibility.collapse(allowing: allowed, refresh: refresh)
     }
 
     func revealAll() {
         visibility.reveal()
-        nativeVisibility.restoreAll()
     }
 
     func refresh() {
@@ -569,7 +467,6 @@ final class ArrowBarModel: ObservableObject {
         }
         if !conflictingManagers.isEmpty { revealAll() }
         catalog.refresh()
-        nativeVisibility.refreshAccess()
         if enabled && visibility.wantsCollapsed && !editing { applyCollapsed(refresh: true) }
     }
 }

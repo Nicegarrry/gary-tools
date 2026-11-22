@@ -128,7 +128,7 @@ final class AppCoordinator: ObservableObject {
 
     func refreshAll() {
         lidGuard.refreshStatus()
-        refreshSystemState()
+        accessibilityGranted = AXIsProcessTrusted()
     }
 
     func refreshSystemState() {

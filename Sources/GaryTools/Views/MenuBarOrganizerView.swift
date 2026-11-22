@@ -13,29 +13,6 @@ struct MenuBarOrganizerView: View {
             } else if !model.visibility.available {
                 notice("Menu bar visibility control is unavailable on this macOS version.", icon: "exclamationmark.triangle")
             }
-            if let error = model.nativeVisibility.lastError {
-                notice(error, icon: "exclamationmark.triangle")
-            }
-
-            if !model.nativeVisibility.hasAccess {
-                HStack(spacing: 14) {
-                    Image(systemName: "lock.shield").font(.system(size: 18)).foregroundStyle(AppTheme.sky)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Allow per-app menu bar control").font(.system(size: 13, weight: .medium))
-                        Text("Select group.com.apple.controlcenter.plist once so Gary Tools can hide third-party icons while keeping Live Activities intact.")
-                            .font(.system(size: 11.5)).foregroundStyle(AppTheme.secondary)
-                    }
-                    Spacer()
-                    Button("Allow Access…") {
-                        model.nativeVisibility.requestAccess()
-                        if model.nativeVisibility.hasAccess { model.revealAll() }
-                    }
-                    .buttonStyle(FlatButtonStyle(primary: true, compact: true))
-                }
-                .padding(14)
-                .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AppTheme.sky.opacity(0.3), lineWidth: 1))
-            }
 
             // Toolbar: search + refresh + edit layout
             HStack(spacing: 10) {

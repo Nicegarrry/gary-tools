@@ -17,9 +17,9 @@
 - All data stored locally in `~/Library/Application Support/Gary Tools/Clipboard` with `0700`/`0600` permissions — no accounts, telemetry, or cloud sync.
 
 ### 3. Menu Bar Organizer
-- Per-app native Control Center menu bar icon switches — hides third-party icons while keeping macOS Live Activities and system indicators intact.
+- Uses macOS 27’s native `MenuBarClientCore` visibility control for instant, zero-flicker hiding of unpinned third-party menu bar icons while keeping all macOS system items (Battery, Bluetooth, Clock, Displays, Keyboard, Volume, Wi-Fi, Screen Mirroring, Control Center) visible.
 - Dedicated `«` / `»` menu bar toggle, drag-and-drop layout editor (`⌘E`), hover-to-reveal, floating `Show icons` recovery pill, and global reveal shortcut (**⌃⌥⌘Space**).
-- Write-ahead crash recovery journal guarantees original switch states are restored on reveal or quit.
+- XPC-backed assertions automatically restore all icons on reveal, quit, or crash. *(Note: macOS pauses Live Activity pills while icons are tucked; click the arrow, hover the menu bar, or press `⌃⌥⌘Space` anytime to reveal.)*
 
 ### 4. Repo Sync
 - Hourly background fast-forward pull (`git pull --ff-only`) across `~/Developer` (and one grouping subfolder deep, e.g. `local/`) while the Mac is awake — even when Sleep Guard is turned off.

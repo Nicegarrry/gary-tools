@@ -13,8 +13,8 @@ struct GaryToolsMain {
             print("  Bundle ID:         \(Bundle.main.bundleIdentifier ?? ArrowBarModel.bundleID)")
             print("  Data Dir:          \(GaryToolsPaths.appSupportRoot.path)")
             print("  Accessibility:     \(AXIsProcessTrusted() ? "granted" : "not granted")")
-            print("  MenuBarBridge:     \(GTNativePreferences.isAvailable() ? "available" : "unavailable")")
-            print("  ControlCenter:     \(NativeVisibilityStore.shared.hasAccess ? "granted" : "not granted")")
+            print("  MenuBarControl:    \(GTAssessmentRestriction.isAvailable() ? "available (MenuBarClientCore)" : "unavailable")")
+            print("  SystemItems:       \(GTAssessmentRestriction.allSystemItems().count) allowed")
             exit(0)
         }
 

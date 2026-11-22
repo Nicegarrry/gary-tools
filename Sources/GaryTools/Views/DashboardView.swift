@@ -98,12 +98,11 @@ struct DashboardView: View {
 
     private var menuBarCard: some View {
         let ab = coordinator.arrowBar
-        let needsAccess = !ab.nativeVisibility.hasAccess
         let pillText = !ab.enabled ? "Disabled"
-            : needsAccess ? "Setup Needed"
+            : !ab.visibility.available ? "Unavailable"
             : ab.visibility.isCollapsed ? "Icons Tucked" : "All Revealed"
         let pillColor: Color = !ab.enabled ? AppTheme.muted
-            : needsAccess ? AppTheme.warning
+            : !ab.visibility.available ? AppTheme.warning
             : ab.visibility.isCollapsed ? AppTheme.sky : AppTheme.positive
 
         return moduleCard(
@@ -112,27 +111,17 @@ struct DashboardView: View {
             pill: (pillText, pillColor),
             destination: .menuBar
         ) {
-            Text(needsAccess
-                 ? "Grant one-time access to Control Center’s plist to tuck away icons cleanly."
-                 : "\(ab.pinnedCount) pinned app\(ab.pinnedCount == 1 ? "" : "s") · Hover reveal \(ab.expandOnHover ? "on" : "off")")
+            Text("\(ab.pinnedCount) pinned app\(ab.pinnedCount == 1 ? "" : "s") · Hover reveal \(ab.expandOnHover ? "on" : "off")")
                 .font(.system(size: 12.5))
                 .foregroundStyle(AppTheme.secondary)
                 .lineLimit(2)
             Spacer(minLength: 10)
             HStack(spacing: 8) {
-                if needsAccess {
-                    Button("Allow Access…") {
-                        ab.nativeVisibility.requestAccess()
-                        if ab.nativeVisibility.hasAccess { ab.revealAll() }
-                    }
-                    .buttonStyle(FlatButtonStyle(primary: true, compact: true))
-                } else {
-                    Button(ab.visibility.isCollapsed ? "Show All Icons" : "Tuck Away") {
-                        ab.toggle()
-                    }
-                    .buttonStyle(FlatButtonStyle(primary: !ab.visibility.isCollapsed, compact: true))
-                    .disabled(!ab.enabled || !ab.conflictingManagers.isEmpty)
+                Button(ab.visibility.isCollapsed ? "Show All Icons" : "Tuck Away") {
+                    ab.toggle()
                 }
+                .buttonStyle(FlatButtonStyle(primary: !ab.visibility.isCollapsed, compact: true))
+                .disabled(!ab.enabled || !ab.visibility.available || !ab.conflictingManagers.isEmpty)
                 Button("Edit Layout") {
                     coordinator.activeSection = .menuBar
                     ab.beginEditing()
@@ -224,9 +213,9 @@ struct DashboardView: View {
                 )
                 healthBadge(
                     title: "Menu Bar",
-                    ok: coordinator.arrowBar.nativeVisibility.hasAccess,
-                    detail: coordinator.arrowBar.nativeVisibility.hasAccess ? "Control Center linked" : "Select plist once",
-                    action: coordinator.arrowBar.nativeVisibility.hasAccess ? nil : { coordinator.arrowBar.nativeVisibility.requestAccess() }
+                    ok: coordinator.arrowBar.visibility.available,
+                    detail: coordinator.arrowBar.visibility.available ? "macOS 27 control ready" : "Unavailable",
+                    action: nil
                 )
                 healthBadge(
                     title: "Daemon",

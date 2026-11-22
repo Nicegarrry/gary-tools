@@ -128,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
-            if self.coordinator.arrowBar.enabled && self.coordinator.arrowBar.nativeVisibility.hasAccess && self.coordinator.arrowBar.startCollapsed {
+            if self.coordinator.arrowBar.enabled && self.coordinator.arrowBar.visibility.available && self.coordinator.arrowBar.startCollapsed {
                 self.coordinator.arrowBar.applyCollapsed()
             }
         }
@@ -229,10 +229,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }.store(in: &subscriptions)
 
         coordinator.arrowBar.$showRecoveryButton.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.updateRecoveryButton() }
-        }.store(in: &subscriptions)
-
-        coordinator.arrowBar.nativeVisibility.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async { self?.updateRecoveryButton() }
         }.store(in: &subscriptions)
 
@@ -430,12 +426,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateArrowStatusItem() {
         guard let button = arrowItem?.button else { return }
         let ab = coordinator.arrowBar
-        let warning = !ab.visibility.available || ab.visibility.errorMessage != nil || !ab.conflictingManagers.isEmpty || !ab.nativeVisibility.hasAccess
+        let warning = !ab.visibility.available || ab.visibility.errorMessage != nil || !ab.conflictingManagers.isEmpty
         let symbol = ab.visibility.isCollapsed ? "chevron.left.2" : "chevron.right.2"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Menu Bar Organizer")
         button.image?.isTemplate = true
         button.toolTip = warning
-            ? "Menu Bar Organizer needs setup — click to open Gary Tools"
+            ? "Menu Bar Organizer needs attention — click to open Gary Tools"
             : (ab.visibility.isCollapsed ? "Show tucked-away icons · Right-click for options" : "Tuck away icons · Right-click for options")
         updateRecoveryButton()
     }
@@ -456,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             arrowItem?.menu = menu
             arrowItem?.button?.performClick(nil)
             arrowItem?.menu = nil
-        } else if !ab.conflictingManagers.isEmpty || !ab.visibility.available || ab.visibility.errorMessage != nil || !ab.nativeVisibility.hasAccess {
+        } else if !ab.conflictingManagers.isEmpty || !ab.visibility.available || ab.visibility.errorMessage != nil {
             coordinator.activeSection = .menuBar
             openMainWindow()
         } else {
@@ -466,8 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func updateRecoveryButton() {
         let ab = coordinator.arrowBar
-        guard ab.enabled, ab.showRecoveryButton,
-              ab.visibility.isCollapsed || (ab.nativeVisibility.lastError != nil && ab.nativeVisibility.hasPendingRestoration) else {
+        guard ab.enabled, ab.showRecoveryButton, ab.visibility.isCollapsed else {
             recoveryPanel?.orderOut(nil)
             return
         }

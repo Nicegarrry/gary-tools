@@ -120,6 +120,9 @@ final class ClipboardAndMigrationTests: XCTestCase {
         defer {
             targetDefaults.removePersistentDomain(forName: defaultsSuiteName)
             arrowDefaults.removePersistentDomain(forName: arrowSuiteName)
+            let prefsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences")
+            try? FileManager.default.removeItem(at: prefsDir.appendingPathComponent("\(defaultsSuiteName).plist"))
+            try? FileManager.default.removeItem(at: prefsDir.appendingPathComponent("\(arrowSuiteName).plist"))
         }
         arrowDefaults.set(true, forKey: "expandOnHover")
 

@@ -71,6 +71,7 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
         .ignoresSafeArea(.container, edges: .top)
         .frame(width: 820, height: 610)
+        .onAppear { coordinator.refreshSystemState() }
     }
 
     private var sidebar: some View {
@@ -302,6 +303,11 @@ struct SettingsView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(coordinator.arrowBar.revealShortcutAvailable ? AppTheme.sky : AppTheme.warning)
             }
+            Text("Uses macOS Menu Bar visibility control for instant hide/reveal with automatic restore on quit. macOS pauses Live Activity pills while icons are tucked; click the arrow, hover the menu bar, or press ⌃⌥⌘Space to reveal anytime.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(AppTheme.muted)
+                .lineSpacing(3)
+                .padding(.top, 12)
         }
     }
 
@@ -317,11 +323,11 @@ struct SettingsView: View {
                 action: coordinator.requestAccessibility
             )
             permissionRow(
-                title: "Menu Bar Control (Control Center)",
-                detail: "Security-scoped access to group.com.apple.controlcenter.plist for per-app icon switches.",
-                ok: coordinator.arrowBar.nativeVisibility.hasAccess,
-                buttonTitle: "Select Plist…",
-                action: { coordinator.arrowBar.nativeVisibility.requestAccess() }
+                title: "Menu Bar Control (macOS 27)",
+                detail: "Uses MenuBarClientCore visibility assertions — hides unpinned third-party icons immediately and restores automatically on quit.",
+                ok: coordinator.arrowBar.visibility.available,
+                buttonTitle: nil,
+                action: nil
             )
             permissionRow(
                 title: "Sleep Guard Daemon",
@@ -358,6 +364,7 @@ struct SettingsView: View {
         }
         .onAppear {
             coordinator.refreshAll()
+            coordinator.refreshSystemState()
             coordinator.lidGuard.checkEnvironment()
         }
     }
