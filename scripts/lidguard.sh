@@ -1,32 +1,33 @@
 #!/bin/bash
-# lidguard — keep the Mac awake while Herdr agents are working.
+# Gary Tools background daemon — Sleep Guard + periodic git repo auto-pull.
 #
-# ALL SETTINGS LIVE IN settings.conf (same folder). You shouldn't need to edit this file.
-#
-# How it works, every few seconds:
-#   1. Re-read settings.conf.
-#   2. Ask Herdr whether any agent is "working" (or has just asked you a question — we wait
-#      a few minutes for you to answer before giving up).
-#   3. If yes, and no override applies (low battery, Low Power Mode, too hot, battery time
-#      limit), turn on "pmset disablesleep" — the Mac won't sleep from the lid or from idling.
-#   4. Otherwise turn it off. If we were holding a closed lid awake, put the Mac to sleep now
-#      and post a notification saying why.
-# Keep Awake mode (like caffeinate) keeps the Mac on regardless, optionally until a set time.
+# Settings & runtime files live in:
+#   ~/Library/Application Support/Gary Tools/   (override via GARY_TOOLS_DATA_DIR)
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-SETTINGS="$DIR/settings.conf"
-[ -f "$SETTINGS" ] || cp "$DIR/settings.default.conf" "$SETTINGS" 2>/dev/null
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA_DIR="${GARY_TOOLS_DATA_DIR:-$HOME/Library/Application Support/Gary Tools}"
+mkdir -p "$DATA_DIR"
+
+SETTINGS="$DATA_DIR/settings.conf"
+if [ ! -f "$SETTINGS" ]; then
+  if [ -f "$SCRIPT_DIR/settings.default.conf" ]; then
+    cp "$SCRIPT_DIR/settings.default.conf" "$SETTINGS" 2>/dev/null || true
+  elif [ -f "$SCRIPT_DIR/../config/settings.default.conf" ]; then
+    cp "$SCRIPT_DIR/../config/settings.default.conf" "$SETTINGS" 2>/dev/null || true
+  fi
+fi
+
 HERDR=$(command -v herdr 2>/dev/null || echo "$HOME/.local/bin/herdr")
 JQ=$(command -v jq 2>/dev/null || echo /usr/bin/jq)
-HELPER="$DIR/lidguard-helper"
-LABEL="com.$(whoami).lidguard"   # launchd names (must match install.sh)
+HELPER="$SCRIPT_DIR/lidguard-helper"
+SYNC_SCRIPT="$SCRIPT_DIR/dev-pull-all.sh"
+LABEL="com.$(whoami).garytools.daemon"
 UID_NUM=$(id -u)
 
 # ── Settings ────────────────────────────────────────────────────────────────
 
 load_settings() {
-  # Defaults, used if settings.conf is missing or a value is mistyped
-  ENABLED=yes
+  ENABLED=no
   KEEP_AWAKE_ALWAYS=no
   KEEP_AWAKE_UNTIL=""
   MIN_BATTERY_PERCENT=20
@@ -45,7 +46,6 @@ load_settings() {
   AUTO_PULL_INTERVAL_MINUTES=60
   AUTO_PULL_DIR="$HOME/Developer"
 
-  # Read only NAME=value lines (never runs anything from the file)
   if [ -f "$SETTINGS" ]; then
     local key raw value
     while IFS='=' read -r key raw; do
@@ -77,9 +77,8 @@ load_settings() {
   case "$HEAT_LIMIT" in fair) HEAT_LEVEL=1 ;; serious) HEAT_LEVEL=2 ;; critical) HEAT_LEVEL=3 ;; *) HEAT_LEVEL=99 ;; esac
 }
 
-# Change one NAME=value line in settings.conf (used for timers and login reset)
 set_setting() {
-  if grep -qE "^$1=" "$SETTINGS"; then
+  if grep -qE "^$1=" "$SETTINGS" 2>/dev/null; then
     sed -i '' "s|^$1=.*|$1=$2|" "$SETTINGS"
   else
     echo "$1=$2" >> "$SETTINGS"
@@ -90,7 +89,6 @@ set_setting() {
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
-# Prints "<working> <waiting-for-input>"
 agent_counts() {
   local out
   out=$("$HERDR" agent list 2>/dev/null | "$JQ" -r '
@@ -100,16 +98,11 @@ agent_counts() {
 }
 
 lid_closed() { ioreg -r -k AppleClamshellState -d 4 | grep -q '"AppleClamshellState" = Yes'; }
-
 on_power() { pmset -g batt | grep -q "AC Power"; }
-
 battery_percent() { pmset -g batt | grep -Eo '[0-9]+%' | head -1 | tr -d %; }
-
 low_power_mode() { pmset -g | grep -qE '^ *(powermode|lowpowermode) +1'; }
-
 heat_level() { "$HELPER" thermal 2>/dev/null || echo 0; }
 
-# True if any non-built-in display is connected
 external_monitor() {
   local d total builtin
   d=$(system_profiler SPDisplaysDataType 2>/dev/null)
@@ -118,14 +111,12 @@ external_monitor() {
   [ "$total" -gt "$builtin" ]
 }
 
-# Identifies the current login session (changes every time you log in)
 login_marker() {
   local pid
   pid=$(ps -axo pid=,user=,comm= | awk -v u="$(whoami)" '$2==u && $3 ~ /loginwindow$/ {print $1; exit}')
   [ -n "$pid" ] && echo "$pid $(ps -o lstart= -p "$pid")"
 }
 
-# "1h 23m" / "4m"
 pretty_duration() {
   local s=$1 h m
   [ "$s" -lt 0 ] && s=0
@@ -137,27 +128,21 @@ pretty_duration() {
 # ── Actions ─────────────────────────────────────────────────────────────────
 
 sleep_block_is_on() { [ "$(pmset -g | awk '/SleepDisabled/ {print $2}')" = "1" ]; }
-
 block_sleep() { sleep_block_is_on || { sudo -n /usr/bin/pmset -a disablesleep 1 && log "sleep blocked"; }; }
-
 allow_sleep() { sleep_block_is_on && { sudo -n /usr/bin/pmset -a disablesleep 0 && log "sleep allowed"; }; }
-
-# One-line status read by the menu bar app: "<off|idle|awake|caffeine>|<message>"
-write_status() { echo "$1|$2" > "$DIR/.status.tmp" && mv "$DIR/.status.tmp" "$DIR/.status"; }
-
+write_status() { echo "$1|$2" > "$DATA_DIR/.status.tmp" && mv "$DATA_DIR/.status.tmp" "$DATA_DIR/.status"; }
 lock_screen() { "$HELPER" lock && log "screen locked"; }
 
 notify() {
   [ "$NOTIFY_ON_SLEEP" = yes ] || return
-  osascript -e "display notification \"$1\" with title \"lidguard\"" >/dev/null 2>&1
+  osascript -e "display notification \"$1\" with title \"Gary Tools\"" >/dev/null 2>&1
 }
 
-# Put the Mac to sleep now, remember why, and don't re-hold it awake until the lid is opened
 force_sleep() {
   stop_caffeinate
   allow_sleep
   log "going to sleep: $1"
-  echo "$(date '+%a %H:%M')|$1" > "$DIR/.last_sleep"
+  echo "$(date '+%a %H:%M')|$1" > "$DATA_DIR/.last_sleep"
   notify "Mac went to sleep: $1"
   slept_with_lid_closed=yes
   holding_closed_lid=no
@@ -165,24 +150,20 @@ force_sleep() {
   pmset sleepnow >/dev/null
 }
 
-# Keep the display on too while in Keep Awake mode (a child caffeinate that dies with us)
 start_caffeinate() {
   [ -n "$caff_pid" ] && kill -0 "$caff_pid" 2>/dev/null && return
   caffeinate -di -w $$ & caff_pid=$!
 }
 stop_caffeinate() { [ -n "$caff_pid" ] && kill "$caff_pid" 2>/dev/null; caff_pid=""; }
 
-# Start-at-login: enable/disable both launchd jobs (affects next login, not what's running now)
 apply_start_at_login() {
   [ "$START_AT_LOGIN" = "$applied_start_at_login" ] && return
   local verb=enable; [ "$START_AT_LOGIN" = no ] && verb=disable
   launchctl "$verb" "gui/$UID_NUM/$LABEL" 2>/dev/null
-  launchctl "$verb" "gui/$UID_NUM/$LABEL.menubar" 2>/dev/null
   applied_start_at_login=$START_AT_LOGIN
-  log "start at login: $START_AT_LOGIN"
+  log "daemon start at login: $START_AT_LOGIN"
 }
 
-# Note when we first hold a closed lid awake (and whether it's a desk setup with a monitor)
 note_closed_lid() {
   [ "$lid" = closed ] && [ "$holding_closed_lid" = no ] || return 0
   if [ "$LEAVE_ALONE_WITH_EXTERNAL_MONITOR" = yes ] && external_monitor; then
@@ -192,11 +173,10 @@ note_closed_lid() {
   fi
 }
 
-# Periodically fast-forward pull git repos in AUTO_PULL_DIR (non-blocking)
 maybe_git_sync() {
   local trigger=no
-  if [ -f "$DIR/.pull_now" ]; then
-    rm -f "$DIR/.pull_now"
+  if [ -f "$DATA_DIR/.pull_now" ]; then
+    rm -f "$DATA_DIR/.pull_now"
     trigger=yes
   elif [ "$AUTO_PULL_REPOS" = yes ]; then
     local interval=$((AUTO_PULL_INTERVAL_MINUTES * 60))
@@ -205,16 +185,16 @@ maybe_git_sync() {
     fi
   fi
   [ "$trigger" = yes ] || return 0
-  [ -x "$DIR/dev-pull-all.sh" ] || return 0
+  [ -x "$SYNC_SCRIPT" ] || return 0
   [ -d "$AUTO_PULL_DIR" ] || return 0
   if [ -n "$git_sync_pid" ] && kill -0 "$git_sync_pid" 2>/dev/null; then
     return 0
   fi
   last_git_sync=$now
   (
-    summary=$("$DIR/dev-pull-all.sh" --always --format log --dir "$AUTO_PULL_DIR" 2>/dev/null || echo "sync failed")
+    summary=$("$SYNC_SCRIPT" --always --format log --dir "$AUTO_PULL_DIR" 2>/dev/null || echo "sync failed")
     [ -z "$summary" ] && summary="sync completed"
-    echo "$(date +%s)|$(date '+%a %H:%M')|$summary" > "$DIR/.last_git_sync.tmp" && mv "$DIR/.last_git_sync.tmp" "$DIR/.last_git_sync"
+    echo "$(date +%s)|$(date '+%a %H:%M')|$summary" > "$DATA_DIR/.last_git_sync.tmp" && mv "$DATA_DIR/.last_git_sync.tmp" "$DATA_DIR/.last_git_sync"
     log "git sync: $summary"
   ) &
   git_sync_pid=$!
@@ -225,37 +205,36 @@ trap cleanup INT TERM
 
 # ── Start-up ────────────────────────────────────────────────────────────────
 
-holding_closed_lid=no     # yes while we're keeping a closed lid awake ("monitor" = desk setup)
-slept_with_lid_closed=no  # yes after we forced sleep; cleared when the lid opens
-idle_since=""             # when agents stopped being active
-waiting_since=""          # when agents started waiting for your input
-battery_closed_since=""   # when the current lid-closed-on-battery stretch began
-hot_since=""              # when the Mac first got too hot (lid closed)
+holding_closed_lid=no
+slept_with_lid_closed=no
+idle_since=""
+waiting_since=""
+battery_closed_since=""
+hot_since=""
 was_enabled=""
 was_caffeine=""
 caff_pid=""
 git_sync_pid=""
 last_git_sync=""
-if [ -f "$DIR/.last_git_sync" ]; then
-  ts=$(cut -d'|' -f1 "$DIR/.last_git_sync" 2>/dev/null)
+if [ -f "$DATA_DIR/.last_git_sync" ]; then
+  ts=$(cut -d'|' -f1 "$DATA_DIR/.last_git_sync" 2>/dev/null)
   [[ "$ts" =~ ^[0-9]+$ ]] && last_git_sync=$ts
 fi
 applied_start_at_login=""
-last_lid=$(lid_closed && echo closed || echo open)   # so we only lock on a fresh close
+last_lid=$(lid_closed && echo closed || echo open)
 
 load_settings
-log "started"
+log "started (data: $DATA_DIR)"
 
-# Fresh login? Optionally start switched off.
 marker=$(login_marker)
-if [ -n "$marker" ] && [ "$marker" != "$(cat "$DIR/.login" 2>/dev/null)" ]; then
-  if [ -f "$DIR/.login" ] && [ "$TURN_ON_AT_LOGIN" = no ]; then
+if [ -n "$marker" ] && [ "$marker" != "$(cat "$DATA_DIR/.login" 2>/dev/null)" ]; then
+  if [ -f "$DATA_DIR/.login" ] && [ "$TURN_ON_AT_LOGIN" = no ]; then
     set_setting ENABLED no
     set_setting KEEP_AWAKE_ALWAYS no
     set_setting KEEP_AWAKE_UNTIL ""
     log "new login — starting switched off"
   fi
-  echo "$marker" > "$DIR/.login"
+  echo "$marker" > "$DATA_DIR/.login"
 fi
 
 # ── Main loop ───────────────────────────────────────────────────────────────
@@ -266,7 +245,6 @@ while true; do
   now=$(date +%s)
   until_epoch=""
 
-  # Lid, battery time limit and heat (timers only run while the lid is closed)
   if lid_closed; then
     lid=closed
     if on_power; then battery_closed_since=""
@@ -281,26 +259,22 @@ while true; do
     holding_closed_lid=no; slept_with_lid_closed=no
   fi
   too_hot=no
-  [ -n "$hot_since" ] && [ $((now - hot_since)) -ge 60 ] && too_hot=yes   # sustained for a minute
+  [ -n "$hot_since" ] && [ $((now - hot_since)) -ge 60 ] && too_hot=yes
 
-  # Lock the screen the moment the lid closes (skip if a monitor is in use — you're working on it)
   if [ "$lid" = closed ] && [ "$last_lid" = open ] && [ "$LOCK_SCREEN_WHEN_LID_CLOSES" = yes ]; then
     external_monitor || lock_screen
   fi
   last_lid=$lid
 
-  # After a forced sleep, stay out of the way until the lid is opened again
-  # (stops the Mac re-waking itself in a bag and running hot again)
   if [ "$slept_with_lid_closed" = yes ]; then
     allow_sleep; stop_caffeinate
     write_status idle "Slept with lid closed — open the lid to resume"
     sleep "$CHECK_EVERY_SECONDS"; continue
   fi
 
-  # ── Periodic git repo sync (runs while awake, even when sleep-blocking is off) ──
+  # Periodic git repo sync (runs while awake, even when sleep-blocking is off)
   maybe_git_sync
 
-  # ── Keep Awake mode (like caffeinate) ──
   if [ "$KEEP_AWAKE_ALWAYS" = yes ] && [ -n "$KEEP_AWAKE_UNTIL" ]; then
     until_epoch=$(date -j -f "%Y-%m-%dT%H:%M" "$KEEP_AWAKE_UNTIL" +%s 2>/dev/null)
     if [ -n "$until_epoch" ] && [ "$now" -ge "$until_epoch" ]; then
@@ -333,11 +307,10 @@ while true; do
     log "Keep Awake OFF"; was_caffeine=no; stop_caffeinate; idle_since=""
   fi
 
-  # ── On/off switch ──
   if [ "$ENABLED" != "yes" ]; then
     [ "$was_enabled" != "no" ] && log "switched OFF"
     if [ "$holding_closed_lid" = yes ] && [ "$lid" = closed ]; then
-      force_sleep "lidguard switched off with the lid closed"
+      force_sleep "Sleep Guard switched off with the lid closed"
     fi
     allow_sleep
     was_enabled=no; holding_closed_lid=no
@@ -347,7 +320,6 @@ while true; do
   [ "$was_enabled" = "no" ] && log "switched ON"
   was_enabled=yes
 
-  # ── Agents ──
   read -r working waiting <<< "$(agent_counts)"
   waiting_ok=no
   if [ "$working" -eq 0 ] && [ "$waiting" -gt 0 ]; then
@@ -359,7 +331,6 @@ while true; do
   active=no
   { [ "$working" -gt 0 ] || [ "$waiting_ok" = yes ]; } && active=yes
 
-  # Reasons to let the Mac sleep
   reason=""
   if [ "$active" = no ]; then
     [ -z "$idle_since" ] && idle_since=$now
@@ -380,7 +351,6 @@ while true; do
   fi
   if [ "$too_hot" = yes ] && [ "$holding_closed_lid" != monitor ]; then reason="too hot with the lid closed"; fi
 
-  # Act
   if [ "$active" = yes ] && [ -z "$reason" ]; then
     block_sleep
     note_closed_lid "$working working, $waiting waiting"
@@ -392,7 +362,6 @@ while true; do
     allow_sleep
   fi
 
-  # Status line for the menu bar app
   agents="$working agent"; [ "$working" -ne 1 ] && agents="${agents}s"
   if sleep_block_is_on; then
     if [ "$working" -gt 0 ]; then

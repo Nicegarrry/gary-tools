@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Gary Tools</string>
+  <key>CFBundleDisplayName</key>
+  <string>Gary Tools</string>
+  <key>CFBundleIdentifier</key>
+  <string>local.nicegary.GaryTools</string>
+  <key>CFBundleExecutable</key>
+  <string>GaryTools</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleShortVersionString</key>
+  <string>2.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.utilities</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Gary Tools uses macOS system events to manage sleep and clipboard shortcuts.</string>
+</dict>
+</plist>

@@ -1,7 +1,10 @@
-# Personal settings (created from settings.default.conf on install)
-settings.conf
+# SwiftPM & local build artifacts
+.build/
+dist/
+Resources/AppIcon.icns
 
-# Runtime state
+# Legacy runtime files if present
+settings.conf
 .status
 .status.tmp
 .login
@@ -9,12 +12,7 @@ settings.conf
 .last_git_sync
 .last_git_sync.tmp
 .pull_now
-
-# Build output
 lidguard-helper
 Lidguard.app/
 
 .DS_Store
-
-# Menu-bar compiler cache and generated icon assets
-menubar/.build/
