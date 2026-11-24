@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let hotKeys = GlobalHotKeys()
     private let deliveryQueue = DeliveryQueue()
     private let ownRegistration = ApplicationRegistration()
+    private let contextGrabber = ContextGrabber()
     private var clipboardMonitor: ClipboardMonitor?
 
     private var hubItem: NSStatusItem!
@@ -182,6 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotKeys.onToggleClipboard = { [weak self] in self?.toggleClipboardBrowser() }
         hotKeys.onPasteStack = { [weak self] in self?.pasteStack(allText: false) }
         hotKeys.onRevealMenuBar = { [weak self] in self?.coordinator.arrowBar.revealAll() }
+        hotKeys.onContextGrab = { [weak self] in self?.contextGrabber.grab() }
+        contextGrabber.developerDir = { [weak self] in self?.coordinator.lidGuard.autoPullDir ?? "~/Developer" }
+        contextGrabber.onError = { [weak self] message in self?.showAlert("Gary Tools — Context Grab", detail: message) }
         configureHotKeys()
     }
 
@@ -282,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         toolsMenu.addItem(.separator())
         toolsMenu.addItem(menuItem("Open Clipboard Browser", #selector(menuToggleClipboard), "v", modifiers: [.control, .option]))
         toolsMenu.addItem(menuItem("New Text Snippet…", #selector(menuNewSnippet), "n"))
+        toolsMenu.addItem(menuItem("Context Grab", #selector(menuContextGrab), "g", modifiers: [.control, .option]))
         toolsMenu.addItem(menuItem("Pull Repos Now", #selector(menuPullReposNow), "r", modifiers: [.command, .shift]))
         toolsMenu.addItem(menuItem("Show All Menu Bar Icons", #selector(menuRevealIcons), ""))
         toolsRoot.submenu = toolsMenu
@@ -351,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(menuItem("Show Clipboard  ⌃⌥V", #selector(menuToggleClipboard), ""))
         let pauseClip = menuItem(store.paused ? "Resume Clipboard Capture" : "Pause Clipboard Capture", #selector(menuToggleClipPause), "")
         menu.addItem(pauseClip)
+        menu.addItem(menuItem("Context Grab  ⌃⌥G", #selector(menuContextGrab), ""))
         if !store.stack.isEmpty {
             menu.addItem(menuItem("Paste Next Stack Item (\(store.stack.count))", #selector(menuPasteStack), ""))
         }
@@ -898,6 +904,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func menuToggleClipPause() { toggleClipboardPause() }
     @objc private func menuPasteStack() { pasteStack(allText: false) }
     @objc private func menuNewSnippet() { editSnippet(nil) }
+    @objc private func menuContextGrab() {
+        // From a menu, give the menu a moment to close so the source app is in front again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.contextGrabber.grab() }
+    }
     @objc private func menuToggleSleepGuard() { coordinator.lidGuard.enabled.toggle() }
     @objc private func keepAwakeIndef() { coordinator.lidGuard.startKeepAwake(until: nil) }
     @objc private func keepAwake1h() { coordinator.lidGuard.startKeepAwake(until: Date().addingTimeInterval(3600)) }
