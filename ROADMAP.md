@@ -39,3 +39,15 @@ A very simple Markdown viewer and editor, simpler than MarkText: open a `.md` fi
 Useful for reading the plans, handoffs and READMEs agents write all day.
 Tension with the vision: Gary Tools owns the background layer, and an editor is a foreground app.
 It fits if it stays a quick window inside Gary Tools (open from Finder or a hotkey, close when done), not a full writing app with tabs, sync or plugins.
+
+### Chrome extension
+
+A small Gary Tools extension for Chrome, talking to the app through Chrome native messaging, with two starting features.
+**Send page to agent**: a clean page-to-Markdown copy plus the URL, handed to an agent Nick picks (onto the clipboard, or into that agent's inbox).
+It is Context Grab for the browser, and only a handoff: Gary Tools never starts the agent.
+**Dark mode while browsing**: the first step of Dark mode anything, done where it is easiest.
+Tension with the vision: an extension ships outside the one app.
+It fits only as a thin companion with no settings or logic of its own; everything else stays in Gary Tools.
+
+Rejected: letting the Claude app control local agents through the browser.
+Claude in Chrome already covers browser control, it breaks the rule that Gary Tools never starts agents, and a browser door into local agents is a security risk.
