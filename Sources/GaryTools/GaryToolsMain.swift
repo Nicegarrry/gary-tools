@@ -62,7 +62,7 @@ struct GaryToolsMain {
             try rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent(name))
         }
 
-        for section in [MainSection.overview, .sleepGuard, .clipboard, .menuBar, .repoSync] {
+        for section in [MainSection.overview, .sleepGuard, .clipboard, .menuBar, .repoSync, .macSettings] {
             coordinator.activeSection = section
             let slug = section.rawValue.lowercased().replacingOccurrences(of: " ", with: "-")
             try capture(MainWindowView(coordinator: coordinator), size: NSSize(width: 940, height: 650), name: "main-\(slug).png")

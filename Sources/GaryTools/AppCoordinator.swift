@@ -10,6 +10,7 @@ enum MainSection: String, CaseIterable, Identifiable {
     case clipboard = "Clipboard"
     case menuBar = "Menu Bar"
     case repoSync = "Repo Sync"
+    case macSettings = "Mac Settings"
 
     var id: String { rawValue }
 
@@ -20,6 +21,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .clipboard: return "doc.on.clipboard"
         case .menuBar: return "chevron.left.2"
         case .repoSync: return "arrow.triangle.2.circlepath"
+        case .macSettings: return "slider.horizontal.3"
         }
     }
 
@@ -30,6 +32,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .clipboard: return "Local clipboard history, pinboards, and paste stack."
         case .menuBar: return "Pin the icons you want and tuck the rest away cleanly."
         case .repoSync: return "Fast-forward Developer repos hourly and on session start."
+        case .macSettings: return "Common macOS settings that are hard to find. Every change can be undone."
         }
     }
 }
@@ -86,6 +89,7 @@ final class AppCoordinator: ObservableObject {
     let clipboardStore: LibraryStore
     let clipboardState = BrowserState()
     let arrowBar: ArrowBarModel
+    let macSettings: MacSettingsModel
     let migratedItems: [String]
 
     @Published var activeSection: MainSection = .overview
@@ -119,10 +123,12 @@ final class AppCoordinator: ObservableObject {
         self.migratedItems = migratedItems
         self.lidGuard = LidGuardModel()
         self.arrowBar = ArrowBarModel()
+        self.macSettings = MacSettingsModel()
 
         lidGuard.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
         clipboardStore.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
         arrowBar.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
+        macSettings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
         refreshSystemState()
     }
 
