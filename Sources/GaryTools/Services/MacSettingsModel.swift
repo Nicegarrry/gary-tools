@@ -126,7 +126,7 @@ final class MacSettingsModel: ObservableObject {
             guard let self else { return }
             if NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").isEmpty,
                let finder = self.workspace.urlForApplication(withBundleIdentifier: "com.apple.finder") {
-                self.workspace.openApplication(at: finder, configuration: NSWorkspace.OpenConfiguration())
+                _ = try? await self.workspace.openApplication(at: finder, configuration: NSWorkspace.OpenConfiguration())
             }
         }
     }
