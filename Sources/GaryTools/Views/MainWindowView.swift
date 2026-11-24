@@ -22,6 +22,8 @@ struct MainWindowView: View {
                             MenuBarOrganizerView(model: coordinator.arrowBar)
                         case .repoSync:
                             RepoSyncView(lidGuard: coordinator.lidGuard)
+                        case .macSettings:
+                            MacSettingsView(model: coordinator.macSettings)
                         }
                     }
                     .padding(.horizontal, 32)
@@ -92,6 +94,15 @@ struct MainWindowView: View {
             }
             .buttonStyle(FlatButtonStyle(primary: true, compact: true))
             .disabled(coordinator.lidGuard.pullingNow)
+        case .macSettings:
+            Button {
+                coordinator.macSettings.restoreOriginals()
+            } label: {
+                Label("Undo All Changes", systemImage: "arrow.uturn.backward")
+            }
+            .buttonStyle(FlatButtonStyle(compact: true))
+            .disabled(!coordinator.macSettings.hasChanges)
+            .help("Puts back every setting as it was before Gary Tools first changed it.")
         }
     }
 
@@ -205,7 +216,7 @@ struct MainWindowView: View {
             if coordinator.lidGuard.pullingNow {
                 ProgressView().controlSize(.mini)
             }
-        case .overview:
+        case .overview, .macSettings:
             EmptyView()
         }
     }

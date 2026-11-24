@@ -25,6 +25,11 @@
 - Hourly background fast-forward pull (`git pull --ff-only`) across `~/Developer` (and one grouping subfolder deep, e.g. `local/`) while the Mac is awake — even when Sleep Guard is turned off.
 - Shared lock-protected script (`scripts/dev-pull-all.sh`) also powers `SessionStart` hooks for Antigravity, Claude Code, and Codex.
 
+### 5. Mac Settings
+- Common macOS settings that are hard to find, in one place: where screenshots save (plus format, shadow, thumbnail, date in the name), the default browser, and the default app for `.md`, text, config and code files (one at a time or a whole group at once).
+- Finder settings with no switch in System Settings: hidden files, file extensions, path bar, full path in the title, and no `.DS_Store` files on network or USB drives.
+- Fail-safe: before the first change to anything, Gary Tools records its original value in `mac-settings-originals.plist`, and **Undo All Changes** puts every setting back.
+
 ## Build, Test & Install
 
 Requires macOS 14+ and Xcode Command Line Tools (`swift`, `jq`). No third-party package dependencies.
