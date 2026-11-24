@@ -1,34 +1,74 @@
 #!/bin/bash
-# dev-pull-all.sh — fast-forward pull git repos under ~/Developer (and one subfolder deep, e.g. local/).
+# dev-pull-all.sh — fast-forward pull git repos under one or more project folders
+# (directly inside each folder and one grouping subfolder deep, e.g. local/).
 # Never merges, rebases, pushes, or overwrites uncommitted work.
 #
 # Usage:
-#   dev-pull-all.sh [--format plain|antigravity|log] [--always] [--dir PATH]
+#   dev-pull-all.sh [--format plain|antigravity|log] [--always] [--dir PATH ...] [--dirs PATH1:PATH2]
 #
 # Modes:
 #   plain       (default) Human-readable report for Claude Code / Codex SessionStart hooks or CLI.
 #   antigravity JSON output for Antigravity SessionStart hook (~/.gemini/config/hooks.json).
-#   log         Compact one-line summary for background runners (e.g. lidguard).
+#   log         Compact one-line summary for background runners (e.g. Gary Tools daemon).
 #
 # Without --always, checks stdin JSON (cwd / workspacePaths) and exits cleanly if the session
-# is not inside the target Developer directory.
+# is not inside any configured directory.
 
 FORMAT="plain"
 ALWAYS=no
-DEV="$HOME/Developer"
+RAW_DIRS=()
+
+add_colon_dirs() {
+  local list="$1" seg
+  while IFS= read -r seg; do
+    [ -n "$seg" ] && RAW_DIRS+=("$seg")
+  done < <(printf '%s\n' "$list" | tr ':' '\n')
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --format) FORMAT="${2:-plain}"; shift 2 ;;
     --always) ALWAYS=yes; shift ;;
-    --dir)    DEV="${2:-$DEV}"; shift 2 ;;
+    --dir)    [ -n "${2:-}" ] && RAW_DIRS+=("$2"); shift 2 ;;
+    --dirs)   [ -n "${2:-}" ] && add_colon_dirs "$2"; shift 2 ;;
     *)        shift ;;
   esac
 done
 
-# Expand leading ~ if passed
-DEV="${DEV/#\~/$HOME}"
-DEV="${DEV%/}"
+if [ "${#RAW_DIRS[@]}" -eq 0 ]; then
+  RAW_DIRS=("$HOME/Developer")
+fi
+
+# Expand leading ~, trim trailing /, and deduplicate configured directories
+TARGET_DIRS=()
+EXISTING_DIRS=()
+SEEN_TARGET=$'\n'
+SEEN_CANON=$'\n'
+
+for raw in "${RAW_DIRS[@]}"; do
+  d="${raw/#\~/$HOME}"
+  [ "$d" != "/" ] && d="${d%/}"
+  [ -z "$d" ] && continue
+
+  case "$SEEN_TARGET" in
+    *$'\n'"$d"$'\n'*) ;;
+    *)
+      SEEN_TARGET="${SEEN_TARGET}${d}"$'\n'
+      TARGET_DIRS+=("$d")
+      ;;
+  esac
+
+  if [ -d "$d" ]; then
+    canon=$(cd "$d" 2>/dev/null && pwd -P) || continue
+    case "$SEEN_CANON" in
+      *$'\n'"$canon"$'\n'*) ;;
+      *)
+        SEEN_CANON="${SEEN_CANON}${canon}"$'\n'
+        EXISTING_DIRS+=("$canon")
+        ;;
+    esac
+  fi
+done
 
 JQ=$(command -v jq 2>/dev/null || echo /usr/bin/jq)
 
@@ -55,7 +95,7 @@ emit_report() {
   esac
 }
 
-# In hook mode (without --always), only run when the session is inside $DEV
+# In hook mode (without --always), only run when the session is inside any configured directory
 if [ "$ALWAYS" != "yes" ]; then
   input=""
   if [ ! -t 0 ]; then
@@ -63,10 +103,25 @@ if [ "$ALWAYS" != "yes" ]; then
   fi
   matched=no
   check_path() {
-    local p="${1%/}"
-    case "$p" in
-      "$DEV"|"$DEV"/*) matched=yes ;;
-    esac
+    local p="${1/#\~/$HOME}"
+    [ "$p" != "/" ] && p="${p%/}"
+    [ -z "$p" ] && return 0
+    local p_canon=""
+    [ -d "$p" ] && p_canon=$(cd "$p" 2>/dev/null && pwd -P || true)
+
+    local t
+    for t in ${TARGET_DIRS[@]+"${TARGET_DIRS[@]}"}; do
+      case "$p" in
+        "$t"|"$t"/*) matched=yes; return 0 ;;
+      esac
+    done
+    if [ -n "$p_canon" ]; then
+      for t in ${EXISTING_DIRS[@]+"${EXISTING_DIRS[@]}"}; do
+        case "$p_canon" in
+          "$t"|"$t"/*) matched=yes; return 0 ;;
+        esac
+      done
+    fi
   }
   if [ -n "$input" ] && [ -x "$JQ" ]; then
     cwd=$(printf '%s' "$input" | "$JQ" -r '.cwd // empty' 2>/dev/null)
@@ -81,9 +136,9 @@ if [ "$ALWAYS" != "yes" ]; then
   [ "$matched" = "yes" ] || emit_empty
 fi
 
-[ -d "$DEV" ] || emit_empty
+[ "${#EXISTING_DIRS[@]}" -gt 0 ] || emit_empty
 
-# Prevent overlapping runs between LidGuard and SessionStart hooks
+# Prevent overlapping runs between Gary Tools daemon and SessionStart hooks
 LOCKDIR="/tmp/dev-pull-all.lock"
 HAVE_LOCK=no
 TMP=""
@@ -127,11 +182,17 @@ fi
 
 export GIT_TERMINAL_PROMPT=0
 TMP=$(mktemp -d)
+MULTI_ROOT=no
+[ "${#EXISTING_DIRS[@]}" -gt 1 ] && MULTI_ROOT=yes
 
 sync_repo() {
-  local dir="$1" rel safe before after err note=""
-  rel="${dir#$DEV/}"
-  safe="${rel//\//__}"
+  local dir="$1" root="$2" idx="$3"
+  local rel safe before after err note=""
+  rel="${dir#$root/}"
+  if [ "$MULTI_ROOT" = "yes" ]; then
+    rel="$(basename "$root")/$rel"
+  fi
+  safe="$(printf '%s' "$rel" | tr -cs 'A-Za-z0-9._-' '_')_${idx}"
 
   if ! git -C "$dir" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
     note="not pulled (no upstream branch)"
@@ -161,21 +222,40 @@ sync_repo() {
   return 0
 }
 
-# Find repos directly in $DEV/* and one grouping folder deep ($DEV/*/*),
-# never descending into a directory that is already a git repo.
+# Find repos directly in each root/* and one grouping folder deep (root/*/*),
+# never descending into a directory that is already a git repo, and deduplicating
+# by canonical path so nested/overlapping folders never pull the same repo twice.
 count=0
-for d in "$DEV"/*; do
-  [ -d "$d" ] || continue
-  if [ -e "$d/.git" ]; then
-    count=$((count + 1))
-    sync_repo "$d" &
-  else
-    for sub in "$d"/*; do
-      [ -d "$sub" ] && [ -e "$sub/.git" ] || continue
-      count=$((count + 1))
-      sync_repo "$sub" &
-    done
+SEEN_REPOS=$'\n'
+
+maybe_sync_repo() {
+  local repo="$1" root="$2"
+  local canon
+  canon=$(cd "$repo" 2>/dev/null && pwd -P) || return 0
+  case "$SEEN_REPOS" in
+    *$'\n'"$canon"$'\n'*) return 0 ;;
+  esac
+  SEEN_REPOS="${SEEN_REPOS}${canon}"$'\n'
+  count=$((count + 1))
+  sync_repo "$repo" "$root" "$count" &
+}
+
+for root in "${EXISTING_DIRS[@]}"; do
+  if [ -e "$root/.git" ]; then
+    maybe_sync_repo "$root" "$(dirname "$root")"
+    continue
   fi
+  for d in "$root"/*; do
+    [ -d "$d" ] || continue
+    if [ -e "$d/.git" ]; then
+      maybe_sync_repo "$d" "$root"
+    else
+      for sub in "$d"/*; do
+        [ -d "$sub" ] && [ -e "$sub/.git" ] || continue
+        maybe_sync_repo "$sub" "$root"
+      done
+    fi
+  done
 done
 wait
 

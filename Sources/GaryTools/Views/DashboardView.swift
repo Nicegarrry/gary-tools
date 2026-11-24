@@ -3,9 +3,51 @@ import SwiftUI
 
 struct DashboardView: View {
     @ObservedObject var coordinator: AppCoordinator
+    @LocalState private var dismissedUpdateBanner = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            if !dismissedUpdateBanner, case .available(let info) = coordinator.updater.state {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(AppTheme.rust)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Update available — \(info.commitsBehind) new \(info.commitsBehind == 1 ? "commit" : "commits")")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(AppTheme.text)
+                        if let summary = info.summaryLines.first {
+                            Text(summary)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(AppTheme.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Button("Update & Relaunch") {
+                        coordinator.updater.installUpdate()
+                    }
+                    .buttonStyle(FlatButtonStyle(primary: true, compact: true))
+                    .disabled(coordinator.updater.isBusy)
+
+                    Button {
+                        dismissedUpdateBanner = true
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(AppTheme.muted)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss update banner")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(AppTheme.rust.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AppTheme.rust.opacity(0.32), lineWidth: 1))
+            }
+
             if !coordinator.migratedItems.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(AppTheme.positive)
@@ -54,16 +96,29 @@ struct DashboardView: View {
                 .lineLimit(2)
             Spacer(minLength: 10)
             HStack(spacing: 8) {
-                Button(lg.enabled ? "Turn Off" : "Watch Agents") {
-                    lg.enabled.toggle()
-                }
-                .buttonStyle(FlatButtonStyle(primary: !lg.enabled && !lg.keepAwake, compact: true))
+                if !lg.herdrInstalled && !lg.enabled {
+                    Button(lg.keepAwake ? "Stop Keep Awake" : "Keep Awake 1h") {
+                        if lg.keepAwake { lg.stopKeepAwake() }
+                        else { lg.startKeepAwake(until: Date().addingTimeInterval(3600)) }
+                    }
+                    .buttonStyle(FlatButtonStyle(primary: !lg.keepAwake, compact: true))
 
-                Button(lg.keepAwake ? "Stop Keep Awake" : "Keep Awake 1h") {
-                    if lg.keepAwake { lg.stopKeepAwake() }
-                    else { lg.startKeepAwake(until: Date().addingTimeInterval(3600)) }
+                    Button("3h") {
+                        lg.startKeepAwake(until: Date().addingTimeInterval(3 * 3600))
+                    }
+                    .buttonStyle(FlatButtonStyle(compact: true))
+                } else {
+                    Button(lg.enabled ? "Turn Off" : "Watch Agents") {
+                        lg.enabled.toggle()
+                    }
+                    .buttonStyle(FlatButtonStyle(primary: !lg.enabled && !lg.keepAwake, compact: true))
+
+                    Button(lg.keepAwake ? "Stop Keep Awake" : "Keep Awake 1h") {
+                        if lg.keepAwake { lg.stopKeepAwake() }
+                        else { lg.startKeepAwake(until: Date().addingTimeInterval(3600)) }
+                    }
+                    .buttonStyle(FlatButtonStyle(compact: true))
                 }
-                .buttonStyle(FlatButtonStyle(compact: true))
             }
         }
     }
@@ -133,7 +188,16 @@ struct DashboardView: View {
 
     private var repoSyncCard: some View {
         let lg = coordinator.lidGuard
-        let hooksActive = lg.sessionHooks.filter(\.installed).count
+        let detectedHooks = coordinator.gitSetup.detectedHooks()
+        let activeHooks = detectedHooks.filter(\.installed).count
+        let folderText: String = {
+            if lg.autoPullDirs.count == 1, let only = lg.autoPullDirs.first {
+                return only
+            }
+            return "\(lg.autoPullDirs.count) \(lg.autoPullDirs.count == 1 ? "folder" : "folders")"
+        }()
+        let repoText = "\(lg.repoCount) \(lg.repoCount == 1 ? "repo" : "repos")"
+        let hookSuffix = detectedHooks.isEmpty ? "" : " · \(activeHooks)/\(detectedHooks.count) hooks"
 
         return moduleCard(
             title: "Repo Sync",
@@ -145,9 +209,10 @@ struct DashboardView: View {
                 .font(.system(size: 12.5))
                 .foregroundStyle(AppTheme.secondary)
                 .lineLimit(2)
-            Text("\(lg.autoPullDir) · \(hooksActive)/\(max(1, lg.sessionHooks.count)) agent hooks active")
+            Text("\(folderText) · \(repoText)\(hookSuffix)")
                 .font(.system(size: 11))
                 .foregroundStyle(AppTheme.muted)
+                .lineLimit(1)
             Spacer(minLength: 10)
             HStack(spacing: 8) {
                 Button(lg.pullingNow ? "Pulling…" : "Pull Now") { lg.triggerPullNow() }
@@ -192,7 +257,11 @@ struct DashboardView: View {
     }
 
     private var systemHealthStrip: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let perms = coordinator.permissions
+        let menuBarAvailable = coordinator.arrowBar.visibility.available
+        let menuBarWarn = coordinator.arrowBar.enabled && !menuBarAvailable
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("SYSTEM & PERMISSIONS")
                     .font(.system(size: 10.5, weight: .semibold))
@@ -204,33 +273,57 @@ struct DashboardView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(AppTheme.sky)
             }
-            HStack(spacing: 12) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                 healthBadge(
                     title: "Accessibility",
-                    ok: coordinator.accessibilityGranted,
-                    detail: coordinator.accessibilityGranted ? "Direct paste ready" : "Needed for direct paste",
-                    action: coordinator.accessibilityGranted ? nil : coordinator.requestAccessibility
+                    status: perms.accessibilityGranted ? .ok : .warning,
+                    detail: perms.accessibilityGranted ? "Direct paste ready" : "Needed for direct paste",
+                    action: perms.accessibilityGranted ? nil : { perms.requestAccessibility() }
                 )
                 healthBadge(
-                    title: "Menu Bar",
-                    ok: coordinator.arrowBar.visibility.available,
-                    detail: coordinator.arrowBar.visibility.available ? "macOS 27 control ready" : "Unavailable",
-                    action: nil
+                    title: "Screen Recording",
+                    status: perms.screenRecordingGranted ? .ok : .warning,
+                    detail: perms.screenRecordingGranted ? "Context Grab ready" : "Needed for screenshots & OCR",
+                    action: perms.screenRecordingGranted ? nil : { perms.requestScreenRecording() }
                 )
                 healthBadge(
                     title: "Daemon",
-                    ok: coordinator.lidGuard.daemonRunning,
-                    detail: coordinator.lidGuard.daemonRunning ? "Running in background" : "Stopped",
-                    action: coordinator.lidGuard.daemonRunning ? nil : { coordinator.lidGuard.ensureDaemonRunning() }
+                    status: perms.daemonRunning ? .ok : .warning,
+                    detail: perms.daemonRunning ? "Running in background" : "Stopped",
+                    action: perms.daemonRunning ? nil : { perms.installOrRepairDaemon() }
+                )
+                healthBadge(
+                    title: "Menu Bar",
+                    status: menuBarAvailable ? .ok : (menuBarWarn ? .warning : .neutral),
+                    detail: menuBarAvailable ? "Native control ready" : "Requires macOS 27+",
+                    action: nil
                 )
             }
         }
     }
 
-    private func healthBadge(title: String, ok: Bool, detail: String, action: (() -> Void)?) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(ok ? AppTheme.positive : AppTheme.warning)
+    private enum HealthStatus {
+        case ok, warning, neutral
+    }
+
+    private func healthBadge(title: String, status: HealthStatus, detail: String, action: (() -> Void)?) -> some View {
+        let symbol: String
+        let color: Color
+        switch status {
+        case .ok:
+            symbol = "checkmark.circle.fill"
+            color = AppTheme.positive
+        case .warning:
+            symbol = "exclamationmark.circle.fill"
+            color = AppTheme.warning
+        case .neutral:
+            symbol = "minus.circle.fill"
+            color = AppTheme.muted
+        }
+
+        return HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
                 .font(.system(size: 14))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 12, weight: .medium))

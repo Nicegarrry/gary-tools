@@ -90,6 +90,9 @@ final class AppCoordinator: ObservableObject {
     let clipboardState = BrowserState()
     let arrowBar: ArrowBarModel
     let macSettings: MacSettingsModel
+    let permissions: PermissionsModel
+    let updater: AppUpdater
+    let gitSetup: GitSetupModel
     let migratedItems: [String]
 
     @Published var activeSection: MainSection = .overview
@@ -101,6 +104,8 @@ final class AppCoordinator: ObservableObject {
     // Actions wired by AppDelegate
     var openClipboardBrowser: () -> Void = {}
     var openSettings: (SettingsPane?) -> Void = { _ in }
+    var openSetupWizard: () -> Void = {}
+    var checkForUpdates: () -> Void = {}
     var pasteClip: (UUID, Bool) -> Void = { _, _ in }
     var copyClip: (UUID, Bool) -> Void = { _, _ in }
     var previewClip: (UUID) -> Void = { _ in }
@@ -124,21 +129,32 @@ final class AppCoordinator: ObservableObject {
         self.lidGuard = LidGuardModel()
         self.arrowBar = ArrowBarModel()
         self.macSettings = MacSettingsModel()
+        self.permissions = PermissionsModel()
+        self.updater = AppUpdater()
+        self.gitSetup = GitSetupModel()
 
         lidGuard.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
         clipboardStore.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
         arrowBar.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
         macSettings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
+        permissions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
+        updater.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
+        gitSetup.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &tokens)
+        permissions.$accessibilityGranted.sink { [weak self] granted in
+            self?.accessibilityGranted = granted
+        }.store(in: &tokens)
         refreshSystemState()
     }
 
     func refreshAll() {
         lidGuard.refreshStatus()
-        accessibilityGranted = AXIsProcessTrusted()
+        permissions.refresh()
+        accessibilityGranted = permissions.accessibilityGranted
     }
 
     func refreshSystemState() {
-        accessibilityGranted = AXIsProcessTrusted()
+        permissions.refresh()
+        accessibilityGranted = permissions.accessibilityGranted
         let status = SMAppService.mainApp.status
         loginEnabled = (status == .enabled)
         loginNeedsApproval = (status == .requiresApproval)
@@ -161,5 +177,9 @@ final class AppCoordinator: ObservableObject {
 
     var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0.0"
+    }
+
+    var appBuildCommit: String {
+        Bundle.main.infoDictionary?["GaryToolsGitCommit"] as? String ?? ""
     }
 }
