@@ -12,10 +12,12 @@ final class GlobalHotKeys {
     var onToggleClipboard: (() -> Void)?
     var onPasteStack: (() -> Void)?
     var onRevealMenuBar: (() -> Void)?
+    var onContextGrab: (() -> Void)?
 
     private(set) var clipboardRegistered = false
     private(set) var stackRegistered = false
     private(set) var revealRegistered = false
+    private(set) var contextGrabRegistered = false
 
     func register(clipboardPrefs: ClipboardPreferences, enableRevealShortcut: Bool) -> Bool {
         unregister()
@@ -40,6 +42,7 @@ final class GlobalHotKeys {
                 case 1: owner.onToggleClipboard?()
                 case 2: owner.onPasteStack?()
                 case 3: owner.onRevealMenuBar?()
+                case 4: owner.onContextGrab?()
                 default: break
                 }
             }
@@ -95,6 +98,18 @@ final class GlobalHotKeys {
             revealRegistered = false
         }
 
+        var grabRef: EventHotKeyRef?
+        let grabStatus = RegisterEventHotKey(
+            UInt32(kVK_ANSI_G),
+            UInt32(controlKey | optionKey),
+            EventHotKeyID(signature: Self.signature, id: 4),
+            GetApplicationEventTarget(),
+            0,
+            &grabRef
+        )
+        if let grabRef { references[4] = grabRef }
+        contextGrabRegistered = (grabStatus == noErr)
+
         return clipboardRegistered && stackRegistered
     }
 
@@ -104,6 +119,7 @@ final class GlobalHotKeys {
         clipboardRegistered = false
         stackRegistered = false
         revealRegistered = false
+        contextGrabRegistered = false
         if let handler { RemoveEventHandler(handler) }
         handler = nil
     }

@@ -1,6 +1,6 @@
 # Gary Tools
 
-**A native macOS utility suite built in Swift & SwiftUI** — consolidating **Sleep Guard** (formerly LidGuard), **Clipboard** (formerly Paste Local), **Menu Bar Organizer** (formerly ArrowBar), and **Git Repo Auto-Pull** into one fast, local-first application styled with the CubeBit palette (translucent navy `#132A45`, sky blue `#7FB3DA`, rust `#B0552E`).
+**A native macOS utility suite built in Swift & SwiftUI** — consolidating **Sleep Guard** (formerly LidGuard), **Clipboard** (formerly Paste Local), **Menu Bar Organizer** (formerly ArrowBar), **Context Grab**, and **Git Repo Auto-Pull** into one fast, local-first application styled with the CubeBit palette (translucent navy `#132A45`, sky blue `#7FB3DA`, rust `#B0552E`).
 
 ## What’s Included
 
@@ -21,7 +21,13 @@
 - Dedicated `«` / `»` menu bar toggle, drag-and-drop layout editor (`⌘E`), hover-to-reveal, floating `Show icons` recovery pill, and global reveal shortcut (**⌃⌥⌘Space**).
 - XPC-backed assertions automatically restore all icons on reveal, quit, or crash. *(Note: macOS pauses Live Activity pills while icons are tucked; click the arrow, hover the menu bar, or press `⌃⌥⌘Space` anytime to reveal.)*
 
-### 4. Repo Sync
+### 4. Context Grab
+- Press **⌃⌥G**, drag over part of the screen (or press `Space` to pick a window), and Gary Tools puts one paste-ready block for your agent on the clipboard.
+- The block is Markdown: the app and window it came from, the browser URL, the git repo and branch (found from terminal and editor window titles), any error lines first, then all the text on screen, read on-device with Vision.
+- The screenshot rides along as an image for apps that take one, and its path is in the Markdown so a terminal agent can open it. The last 50 screenshots are kept in `~/Library/Application Support/Gary Tools/Captures` (`0700`/`0600`).
+- It also lands in Clipboard history. Needs Screen Recording access; window titles use the Accessibility access the clipboard already has.
+
+### 5. Repo Sync
 - Hourly background fast-forward pull (`git pull --ff-only`) across `~/Developer` (and one grouping subfolder deep, e.g. `local/`) while the Mac is awake — even when Sleep Guard is turned off.
 - Shared lock-protected script (`scripts/dev-pull-all.sh`) also powers `SessionStart` hooks for Antigravity, Claude Code, and Codex.
 
@@ -53,6 +59,7 @@ Requires macOS 14+ and Xcode Command Line Tools (`swift`, `jq`). No third-party 
 All persistent state lives in `~/Library/Application Support/Gary Tools/`:
 - `settings.conf` — Sleep Guard & Repo Sync configuration
 - `Clipboard/` — Clipboard history index, raw payloads, and thumbnails
+- `Captures/` — Context Grab screenshots (newest 50)
 - Log: `~/Library/Logs/gary-tools.log`
 
 ## License

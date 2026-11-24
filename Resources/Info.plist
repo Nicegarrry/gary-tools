@@ -27,6 +27,6 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Gary Tools uses macOS system events to manage sleep and clipboard shortcuts.</string>
+  <string>Gary Tools uses macOS system events to manage sleep and clipboard shortcuts, and to read the front browser tab's address when you use Context Grab.</string>
 </dict>
 </plist>
