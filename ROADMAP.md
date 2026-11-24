@@ -23,3 +23,19 @@ A desktop and Notification Center widget with the basics at a glance: CPU, memor
 The agent count reads the same Herdr status Sleep Guard already watches; it shows agents, never starts them.
 Fits the vision: local, small and used all day. It ships as a widget extension inside the one app, not a separate app.
 Open question: a WidgetKit extension needs the app built as an Xcode project with an app group, which the SwiftPM build does not do today.
+
+### Dark mode anything
+
+Like the Noir extension for Safari, but for any app or page: one toggle that turns a bright window dark.
+Fits the vision as a small, local utility used every day.
+Open question: macOS cannot force another app into dark mode, so there are two routes.
+The first is a Safari web extension (needs the Xcode project the widget also needs).
+The second is a per-window smart-invert overlay that works everywhere but is rougher on images.
+Start with the route that covers the apps Nick actually squints at.
+
+### Markdown viewer
+
+A very simple Markdown viewer and editor, simpler than MarkText: open a `.md` file, read it rendered, flip to edit, save.
+Useful for reading the plans, handoffs and READMEs agents write all day.
+Tension with the vision: Gary Tools owns the background layer, and an editor is a foreground app.
+It fits if it stays a quick window inside Gary Tools (open from Finder or a hotkey, close when done), not a full writing app with tabs, sync or plugins.
