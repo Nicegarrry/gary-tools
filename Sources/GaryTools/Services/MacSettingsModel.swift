@@ -372,7 +372,7 @@ final class MacSettingsModel: ObservableObject {
                 let data = try Data(contentsOf: profile.preferencesURL)
                 let updated = try ChromeSettings.settingDownloadDirectory(path, in: data)
                 try backup(profile.preferencesURL, name: profile.id)
-                recordOriginal(OriginalsJournal.chromeKey(profile.id), current.map { .value($0) } ?? .absent)
+                recordOriginal(OriginalsJournal.chromeKey(profile.id), current.map { OriginalsJournal.Original.value($0) } ?? .absent)
                 try updated.write(to: profile.preferencesURL, options: .atomic)
                 changed += 1
             } catch {
