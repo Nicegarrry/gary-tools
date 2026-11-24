@@ -43,13 +43,21 @@
 Requires macOS 14+ and Xcode Command Line Tools (`swift`, `jq`). No third-party package dependencies.
 
 ```bash
+# One-time setup: create a local trusted signing cert so Accessibility & Screen Recording
+# permissions survive future rebuilds (avoids ad-hoc signature invalidation)
+./scripts/setup-signing.sh
+
+# Pull latest, run tests, rebuild, and cleanly restart Gary Tools + daemon
+# (also symlinked to ~/.local/bin/gary-tools-update after install)
+./update.sh
+
 # Build dist/Gary Tools.app (includes CubeBit AppIcon and lidguard-helper)
 ./build.sh
 
 # Run XCTest suite (ArrowCore, VisibilityController, Clipboard, DataMigration)
 ./test.sh
 
-# Build, install background daemon LaunchAgent, and open Gary Tools.app
+# Build, install/restart background daemon LaunchAgent, and cleanly relaunch Gary Tools.app
 ./install.sh
 ```
 
