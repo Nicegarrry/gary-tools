@@ -5,6 +5,8 @@ import SwiftUI
 /// Common macOS settings that are hard to find or have no switch at all in System Settings.
 struct MacSettingsView: View {
     @ObservedObject var model: MacSettingsModel
+    /// The Repo Sync folder, used as the developer folder.
+    let developerDir: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,15 +27,25 @@ struct MacSettingsView: View {
 
             screenshots
             Hairline().padding(.vertical, 20)
+            developerFolder
+            Hairline().padding(.vertical, 20)
             browser
+            Hairline().padding(.vertical, 20)
+            chrome
             Hairline().padding(.vertical, 20)
             fileTypes
             Hairline().padding(.vertical, 20)
             finder
         }
-        .onAppear { model.refresh() }
+        .onAppear {
+            model.refresh()
+            model.refreshDeveloperFolder(developerDir)
+            model.refreshDeveloperTools()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.refresh()
+            model.refreshDeveloperFolder(developerDir)
+            model.refreshDeveloperTools()
         }
     }
 
@@ -68,6 +80,118 @@ struct MacSettingsView: View {
             .padding(.vertical, 6)
             ForEach(MacSettingsCatalog.screenshotToggles) { toggle in
                 toggleRow(toggle)
+            }
+        }
+    }
+
+    // MARK: Developer folder
+
+    private var developerFolder: some View {
+        let display = ScreenshotLocation.display(DeveloperFolder.resolve(developerDir))
+        return VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(title: "Developer Setup",
+                           detail: "One home for every repo (the folder Repo Sync keeps fresh) and the tools a new Mac needs.")
+            HStack(spacing: 10) {
+                Text(display)
+                    .font(.system(size: 12.5, design: .monospaced))
+                    .foregroundStyle(AppTheme.sky)
+                StatusPill(text: model.developerFolderExists ? "Set up" : "Missing",
+                           color: model.developerFolderExists ? AppTheme.positive : AppTheme.warning)
+                Spacer()
+                if model.developerFolderExists {
+                    Button("Show") { NSWorkspace.shared.open(DeveloperFolder.resolve(developerDir)) }
+                        .buttonStyle(FlatButtonStyle(compact: true))
+                    Button("Add to Finder Sidebar") { model.addDeveloperFolderToSidebar(developerDir) }
+                        .buttonStyle(FlatButtonStyle(primary: true, compact: true))
+                        .help("Selects the folder in Finder and uses File > Add to Sidebar (⌃⌘T).")
+                } else {
+                    Button("Create \(display)") { model.createDeveloperFolder(developerDir) }
+                        .buttonStyle(FlatButtonStyle(primary: true, compact: true))
+                }
+            }
+            .padding(.vertical, 6)
+            toolRow(name: "Command Line Tools", detail: "git, clang and make, from Apple", path: model.commandLineToolsPath,
+                    action: "Install…", help: "Opens Apple's installer.") { model.installCommandLineTools() }
+            toolRow(name: "Homebrew", detail: "The Mac package manager", path: model.homebrewPath,
+                    action: "Install…", help: "Runs Homebrew's official install script in Terminal, where you can watch it.") { model.installHomebrew() }
+        }
+    }
+
+    private func toolRow(name: String, detail: String, path: String?, action: String, help: String,
+                         install: @escaping () -> Void) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: path == nil ? "circle.dashed" : "checkmark.circle.fill")
+                .foregroundStyle(path == nil ? AppTheme.muted : AppTheme.positive)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(.system(size: 13, weight: .medium))
+                Text(path ?? detail).font(.system(size: 11, design: path == nil ? .default : .monospaced))
+                    .foregroundStyle(AppTheme.muted)
+            }
+            Spacer()
+            if path == nil {
+                Button(action, action: install)
+                    .buttonStyle(FlatButtonStyle(compact: true))
+                    .help(help)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: Chrome
+
+    private var chrome: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(title: "Google Chrome",
+                           detail: "Install Chrome, and choose where it saves downloads in every Chrome profile.")
+            if model.chromeApp == nil {
+                HStack(spacing: 10) {
+                    switch model.chromeInstall {
+                    case .working(let step):
+                        ProgressView().controlSize(.small)
+                        Text(step).font(.system(size: 12.5)).foregroundStyle(AppTheme.secondary)
+                    case .failed(let reason):
+                        Text(reason).font(.system(size: 12)).foregroundStyle(AppTheme.warning)
+                    case .idle:
+                        Text("Chrome isn't installed.").font(.system(size: 13))
+                    }
+                    Spacer()
+                    Button("Install Chrome") { model.installChrome() }
+                        .buttonStyle(FlatButtonStyle(primary: true, compact: true))
+                        .disabled(model.isInstallingChrome)
+                        .help("Downloads Chrome from Google, checks it is signed by Google, and copies it to /Applications.")
+                }
+                .padding(.vertical, 6)
+            } else {
+                HStack(spacing: 10) {
+                    appLabel(model.chromeApp)
+                    if model.chromeRunning {
+                        StatusPill(text: "Running", color: AppTheme.sky)
+                    }
+                    Spacer()
+                    if model.chromeRunning {
+                        Button("Quit Chrome") { model.quitChrome() }
+                            .buttonStyle(FlatButtonStyle(compact: true))
+                            .help("Chrome rewrites its settings while it runs, so the download folder can only change while it is quit.")
+                    }
+                    Button("Change Download Folder…") { model.chooseChromeDownloadFolder() }
+                        .buttonStyle(FlatButtonStyle(primary: true, compact: true))
+                        .disabled(model.chromeRunning || model.chromeProfiles.isEmpty)
+                }
+                .padding(.vertical, 6)
+                if model.chromeProfiles.isEmpty {
+                    Text("Open Chrome once to create a profile, then come back.")
+                        .font(.system(size: 12)).foregroundStyle(AppTheme.muted)
+                }
+                ForEach(model.chromeProfiles, id: \.profile.id) { item in
+                    HStack {
+                        Text(item.profile.name).font(.system(size: 12.5))
+                        Spacer()
+                        Text(item.folder.map { ScreenshotLocation.display(URL(fileURLWithPath: $0)) } ?? "~/Downloads")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(AppTheme.sky)
+                    }
+                    .padding(.vertical, 3)
+                }
             }
         }
     }

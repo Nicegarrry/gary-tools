@@ -186,6 +186,7 @@ public struct OriginalsJournal: Equatable {
     public static func preferenceKey(domain: String, key: String) -> String { "defaults|\(domain)|\(key)" }
     public static func contentTypeKey(_ identifier: String) -> String { "type|\(identifier)" }
     public static func schemeKey(_ scheme: String) -> String { "scheme|\(scheme)" }
+    public static func chromeKey(_ profile: String) -> String { "chrome|\(profile)" }
 
     /// Records `current` as the original for `key` unless one is already recorded. Returns true if it recorded.
     @discardableResult

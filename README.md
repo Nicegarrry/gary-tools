@@ -28,6 +28,8 @@
 ### 5. Mac Settings
 - Common macOS settings that are hard to find, in one place: where screenshots save (plus format, shadow, thumbnail, date in the name), the default browser, and the default app for `.md`, text, config and code files (one at a time or a whole group at once).
 - Finder settings with no switch in System Settings: hidden files, file extensions, path bar, full path in the title, and no `.DS_Store` files on network or USB drives.
+- Developer setup: create the developer folder (the Repo Sync folder, `~/Developer` by default) and add it to the Finder sidebar; install the Command Line Tools (Apple's installer) and Homebrew (its official script, in Terminal).
+- Google Chrome: install it (downloaded from Google and checked for Google's signature) and set its download folder in every profile. Chrome must be quit for that, and each profile's `Preferences` is backed up to `Chrome Backups/` first.
 - Fail-safe: before the first change to anything, Gary Tools records its original value in `mac-settings-originals.plist`, and **Undo All Changes** puts every setting back.
 
 ## Build, Test & Install

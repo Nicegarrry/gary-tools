@@ -23,7 +23,7 @@ struct MainWindowView: View {
                         case .repoSync:
                             RepoSyncView(lidGuard: coordinator.lidGuard)
                         case .macSettings:
-                            MacSettingsView(model: coordinator.macSettings)
+                            MacSettingsView(model: coordinator.macSettings, developerDir: coordinator.lidGuard.autoPullDir)
                         }
                     }
                     .padding(.horizontal, 32)
