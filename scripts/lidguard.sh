@@ -17,12 +17,47 @@ if [ ! -f "$SETTINGS" ]; then
   fi
 fi
 
-HERDR=$(command -v herdr 2>/dev/null || echo "$HOME/.local/bin/herdr")
+HERDR=""
 JQ=$(command -v jq 2>/dev/null || echo /usr/bin/jq)
 HELPER="$SCRIPT_DIR/lidguard-helper"
 SYNC_SCRIPT="$SCRIPT_DIR/dev-pull-all.sh"
 LABEL="com.$(whoami).garytools.daemon"
 UID_NUM=$(id -u)
+
+resolve_herdr() {
+  local candidate
+  for candidate in \
+    "$(command -v herdr 2>/dev/null || true)" \
+    "$HOME/.local/bin/herdr" \
+    "/opt/homebrew/bin/herdr" \
+    "/usr/local/bin/herdr"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      HERDR="$candidate"
+      return 0
+    fi
+  done
+  HERDR=""
+  return 1
+}
+
+expand_dirs_list() {
+  local input="$1" seg out=""
+  while IFS= read -r seg; do
+    seg=$(printf '%s' "$seg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    [ -z "$seg" ] && continue
+    seg="${seg/#\~/$HOME}"
+    out="${out:+$out:}$seg"
+  done < <(printf '%s\n' "$input" | tr ':' '\n')
+  printf '%s' "$out"
+}
+
+has_existing_pull_dir() {
+  local seg
+  while IFS= read -r seg; do
+    [ -n "$seg" ] && [ -d "$seg" ] && return 0
+  done < <(printf '%s\n' "$AUTO_PULL_DIRS" | tr ':' '\n')
+  return 1
+}
 
 # ── Settings ────────────────────────────────────────────────────────────────
 
@@ -45,6 +80,7 @@ load_settings() {
   AUTO_PULL_REPOS=yes
   AUTO_PULL_INTERVAL_MINUTES=60
   AUTO_PULL_DIR="$HOME/Developer"
+  AUTO_PULL_DIRS=""
 
   if [ -f "$SETTINGS" ]; then
     local key raw value
@@ -67,10 +103,13 @@ load_settings() {
           [[ "$raw" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$ ]] && KEEP_AWAKE_UNTIL=$raw ;;
         AUTO_PULL_DIR)
           [ -n "$raw" ] && AUTO_PULL_DIR="${raw/#\~/$HOME}" ;;
+        AUTO_PULL_DIRS)
+          [ -n "$raw" ] && AUTO_PULL_DIRS=$(expand_dirs_list "$raw") ;;
       esac
     done < <(grep -E '^[[:space:]]*[A-Z_]+[[:space:]]*=' "$SETTINGS")
   fi
 
+  [ -z "$AUTO_PULL_DIRS" ] && AUTO_PULL_DIRS="${AUTO_PULL_DIR:-$HOME/Developer}"
   [ "$CHECK_EVERY_SECONDS" -lt 1 ] && CHECK_EVERY_SECONDS=1
   [ "$AUTO_PULL_INTERVAL_MINUTES" -lt 5 ] && AUTO_PULL_INTERVAL_MINUTES=5
   LIMIT_SECONDS=$(awk "BEGIN {printf \"%d\", $BATTERY_LID_CLOSED_LIMIT_HOURS * 3600}")
@@ -90,6 +129,10 @@ set_setting() {
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
 agent_counts() {
+  if [ -z "$HERDR" ] || [ ! -x "$HERDR" ]; then
+    echo "0 0"
+    return
+  fi
   local out
   out=$("$HERDR" agent list 2>/dev/null | "$JQ" -r '
     [.result.agents[]? | .agent_status] |
@@ -186,13 +229,13 @@ maybe_git_sync() {
   fi
   [ "$trigger" = yes ] || return 0
   [ -x "$SYNC_SCRIPT" ] || return 0
-  [ -d "$AUTO_PULL_DIR" ] || return 0
+  has_existing_pull_dir || return 0
   if [ -n "$git_sync_pid" ] && kill -0 "$git_sync_pid" 2>/dev/null; then
     return 0
   fi
   last_git_sync=$now
   (
-    summary=$("$SYNC_SCRIPT" --always --format log --dir "$AUTO_PULL_DIR" 2>/dev/null || echo "sync failed")
+    summary=$("$SYNC_SCRIPT" --always --format log --dirs "$AUTO_PULL_DIRS" 2>/dev/null || echo "sync failed")
     [ -z "$summary" ] && summary="sync completed"
     echo "$(date +%s)|$(date '+%a %H:%M')|$summary" > "$DATA_DIR/.last_git_sync.tmp" && mv "$DATA_DIR/.last_git_sync.tmp" "$DATA_DIR/.last_git_sync"
     log "git sync: $summary"
@@ -213,6 +256,7 @@ battery_closed_since=""
 hot_since=""
 was_enabled=""
 was_caffeine=""
+logged_no_herdr=no
 caff_pid=""
 git_sync_pid=""
 last_git_sync=""
@@ -223,6 +267,7 @@ fi
 applied_start_at_login=""
 last_lid=$(lid_closed && echo closed || echo open)
 
+resolve_herdr || true
 load_settings
 log "started (data: $DATA_DIR)"
 
@@ -313,12 +358,24 @@ while true; do
       force_sleep "Sleep Guard switched off with the lid closed"
     fi
     allow_sleep
-    was_enabled=no; holding_closed_lid=no
+    was_enabled=no; holding_closed_lid=no; logged_no_herdr=no
     write_status off "Off — Mac sleeps normally"
     sleep "$CHECK_EVERY_SECONDS"; continue
   fi
   [ "$was_enabled" = "no" ] && log "switched ON"
   was_enabled=yes
+
+  if ! resolve_herdr; then
+    if [ "$logged_no_herdr" != yes ]; then
+      log "herdr not installed — agent watcher idle (Keep Awake still works)"
+      logged_no_herdr=yes
+    fi
+    allow_sleep
+    holding_closed_lid=no
+    write_status idle "Herdr not installed — use Keep Awake"
+    sleep "$CHECK_EVERY_SECONDS"; continue
+  fi
+  logged_no_herdr=no
 
   read -r working waiting <<< "$(agent_counts)"
   waiting_ok=no

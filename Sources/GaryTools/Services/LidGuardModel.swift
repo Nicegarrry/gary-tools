@@ -60,7 +60,7 @@ struct HookStatus: Identifiable {
 
 @MainActor
 final class LidGuardModel: ObservableObject {
-    static let daemonLabel = "com.\(NSUserName()).garytools.daemon"
+    nonisolated static let daemonLabel = "com.\(NSUserName()).garytools.daemon"
 
     @Published var enabled = false                 { didSet { save("ENABLED", enabled) } }
     @Published var keepAwake = false               { didSet { save("KEEP_AWAKE_ALWAYS", keepAwake) } }
@@ -79,7 +79,39 @@ final class LidGuardModel: ObservableObject {
     @Published var waitBeforeSleep = 20            { didSet { save("WAIT_BEFORE_SLEEP_SECONDS", waitBeforeSleep) } }
     @Published var autoPullRepos = true            { didSet { save("AUTO_PULL_REPOS", autoPullRepos) } }
     @Published var autoPullIntervalMinutes = 60    { didSet { save("AUTO_PULL_INTERVAL_MINUTES", autoPullIntervalMinutes) } }
-    @Published var autoPullDir = "~/Developer"     { didSet { save("AUTO_PULL_DIR", autoPullDir) } }
+    @Published var autoPullDirs: [String] = [RepoSyncConfig.defaultFolder] {
+        didSet {
+            guard !loading, !syncingDirs else { return }
+            syncingDirs = true
+            let serialized = RepoSyncConfig.serializeDirs(autoPullDirs)
+            let primary = autoPullDirs.first ?? RepoSyncConfig.defaultFolder
+            autoPullDir = primary
+            syncingDirs = false
+            save("AUTO_PULL_DIRS", serialized)
+            save("AUTO_PULL_DIR", primary)
+            refreshRepoCount()
+        }
+    }
+    @Published var autoPullDir = RepoSyncConfig.defaultFolder {
+        didSet {
+            guard !loading, !syncingDirs else { return }
+            syncingDirs = true
+            let trimmed = autoPullDir.trimmingCharacters(in: .whitespacesAndNewlines)
+            let primary = trimmed.isEmpty ? RepoSyncConfig.defaultFolder : trimmed
+            var updated = autoPullDirs
+            if updated.isEmpty {
+                updated = [primary]
+            } else {
+                updated[0] = primary
+            }
+            autoPullDirs = updated
+            let serialized = RepoSyncConfig.serializeDirs(updated)
+            syncingDirs = false
+            save("AUTO_PULL_DIR", primary)
+            save("AUTO_PULL_DIRS", serialized)
+            refreshRepoCount()
+        }
+    }
 
     @Published private(set) var daemonState = "stale"
     @Published private(set) var statusMessage = "Starting daemon…"
@@ -89,8 +121,11 @@ final class LidGuardModel: ObservableObject {
     @Published private(set) var sudoersInstalled = false
     @Published var pullingNow = false
     @Published private(set) var sessionHooks: [HookStatus] = []
+    @Published private(set) var repoCount: Int = 0
+    @Published private(set) var herdrInstalled: Bool = false
 
     private var loading = false
+    private var syncingDirs = false
 
     var hoursString: String {
         batteryLimitHours == batteryLimitHours.rounded() ? String(Int(batteryLimitHours)) : String(batteryLimitHours)
@@ -153,7 +188,9 @@ final class LidGuardModel: ObservableObject {
         waitBeforeSleep         = int("WAIT_BEFORE_SLEEP_SECONDS", 20)
         autoPullRepos           = bool("AUTO_PULL_REPOS", true)
         autoPullIntervalMinutes = int("AUTO_PULL_INTERVAL_MINUTES", 60)
-        autoPullDir             = s["AUTO_PULL_DIR"] ?? "~/Developer"
+        autoPullDirs            = RepoSyncConfig.parseDirs(autoPullDirs: s["AUTO_PULL_DIRS"], fallbackSingleDir: s["AUTO_PULL_DIR"])
+        autoPullDir             = autoPullDirs.first ?? RepoSyncConfig.defaultFolder
+        refreshRepoCount()
     }
 
     func refreshStatus() {
@@ -222,14 +259,52 @@ final class LidGuardModel: ObservableObject {
         sudoersInstalled = FileManager.default.fileExists(atPath: "/etc/sudoers.d/lidguard")
             || FileManager.default.fileExists(atPath: "/etc/sudoers.d/gary-tools")
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let checks: [(String, String, URL, String)] = [
-            ("antigravity", "Antigravity", home.appendingPathComponent(".gemini/config/hooks.json"), "dev-pull-all"),
-            ("claude", "Claude Code", home.appendingPathComponent(".claude/hooks/dev-pull-all.sh"), "dev-pull-all"),
-            ("codex", "Codex", home.appendingPathComponent(".codex/hooks.json"), "dev-pull-all")
-        ]
-        sessionHooks = checks.map { id, name, url, needle in
-            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-            return HookStatus(id: id, name: name, installed: text.contains(needle), path: url.path)
+        herdrInstalled = [
+            home.appendingPathComponent(".local/bin/herdr").path,
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+        ].contains { FileManager.default.isExecutableFile(atPath: $0) }
+        sessionHooks = AgentHookManager.allStatuses(home: home).map {
+            HookStatus(id: $0.id, name: $0.kind.displayName, installed: $0.installed, path: $0.path)
+        }
+    }
+
+    func addAutoPullFolder(_ url: URL) {
+        let display = RepoSyncConfig.display(url)
+        let incomingKey = RepoSyncConfig.expand(display).standardizedFileURL.path.lowercased()
+        let alreadyPresent = autoPullDirs.contains {
+            RepoSyncConfig.expand($0).standardizedFileURL.path.lowercased() == incomingKey
+        }
+        guard !alreadyPresent else { return }
+        autoPullDirs.append(display)
+    }
+
+    func chooseAutoPullFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = RepoSyncConfig.expand(autoPullDirs.first ?? RepoSyncConfig.defaultFolder)
+        panel.prompt = "Add Folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addAutoPullFolder(url)
+    }
+
+    func removeAutoPullFolder(_ path: String) {
+        let targetKey = RepoSyncConfig.expand(path).standardizedFileURL.path.lowercased()
+        autoPullDirs.removeAll {
+            $0 == path || RepoSyncConfig.expand($0).standardizedFileURL.path.lowercased() == targetKey
+        }
+    }
+
+    func refreshRepoCount() {
+        let dirs = autoPullDirs
+        Task.detached(priority: .utility) { [weak self] in
+            let count = RepoSyncConfig.countGitRepos(in: dirs)
+            await MainActor.run { [weak self] in
+                self?.repoCount = count
+            }
         }
     }
 
@@ -263,11 +338,12 @@ final class LidGuardModel: ObservableObject {
         let scriptPath = Bundle.main.url(forResource: "dev-pull-all", withExtension: "sh")?.path
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/dev-pull-all").path
         guard FileManager.default.isExecutableFile(atPath: scriptPath) else { return }
-        let dir = autoPullDir
+        let serializedDirs = RepoSyncConfig.serializeDirs(autoPullDirs)
+        let dirsArg = serializedDirs.isEmpty ? RepoSyncConfig.defaultFolder : serializedDirs
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: scriptPath)
-            proc.arguments = ["--always", "--format", "log", "--dir", dir]
+            proc.arguments = ["--always", "--format", "log", "--dirs", dirsArg]
             let pipe = Pipe()
             proc.standardOutput = pipe
             proc.standardError = FileHandle.nullDevice

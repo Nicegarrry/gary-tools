@@ -103,7 +103,7 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
             }
             Spacer()
-            Text("Gary Tools \(coordinator.appVersion)")
+            Text(versionLabel)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(AppTheme.muted)
                 .padding(20)
@@ -113,10 +113,37 @@ struct SettingsView: View {
         .background(AppTheme.deepNavy.opacity(0.35))
     }
 
+    private var versionLabel: String {
+        let shortCommit = String(coordinator.appBuildCommit.prefix(7))
+        return shortCommit.isEmpty ? "Gary Tools \(coordinator.appVersion)" : "Gary Tools \(coordinator.appVersion) · \(shortCommit)"
+    }
+
     // MARK: - General
 
     private var generalPane: some View {
         VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(title: "Updates & Setup", detail: "Check for new builds from GitHub or re-run the guided setup.")
+            updatesCard
+                .padding(.bottom, 12)
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("First-Run Setup Wizard")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Walk through permissions, Git & GitHub setup, synced folders, and quick Mac defaults.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(AppTheme.secondary)
+                }
+                Spacer()
+                Button("Run Setup Wizard…") {
+                    coordinator.openSetupWizard()
+                }
+                .buttonStyle(FlatButtonStyle(compact: true))
+            }
+            .padding(.vertical, 6)
+
+            Hairline().padding(.vertical, 20)
+
             SectionHeading(title: "Startup & Login", detail: "Keep Gary Tools ready whenever you sign in.")
             ToggleRow(
                 title: "Launch Gary Tools at login",
@@ -142,7 +169,7 @@ struct SettingsView: View {
 
             ToggleRow(
                 title: "Start Sleep Guard background daemon at login",
-                detail: "Runs the lightweight agent watcher and hourly repo sync LaunchAgent.",
+                detail: "Runs the lightweight background watcher and hourly repo sync LaunchAgent.",
                 isOn: Binding(get: { coordinator.lidGuard.startAtLogin }, set: { coordinator.lidGuard.startAtLogin = $0 })
             )
             ToggleRow(
@@ -163,12 +190,119 @@ struct SettingsView: View {
         }
     }
 
+    private var updatesCard: some View {
+        let updater = coordinator.updater
+        let shortCommit = String(coordinator.appBuildCommit.prefix(7))
+        let buildTitle = shortCommit.isEmpty ? "v\(coordinator.appVersion)" : "v\(coordinator.appVersion) · \(shortCommit)"
+
+        return HStack(spacing: 12) {
+            updateStatusIcon(for: updater.state)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(buildTitle)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    updateStatusPill(for: updater.state)
+                }
+                Text(updateStatusDetail(for: updater.state))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(AppTheme.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 10)
+            HStack(spacing: 8) {
+                Button("Check for Updates") {
+                    updater.checkForUpdates(silent: false)
+                }
+                .buttonStyle(FlatButtonStyle(compact: true))
+                .disabled(updater.isBusy)
+
+                if case .available = updater.state {
+                    Button("Update & Relaunch") {
+                        updater.installUpdate()
+                    }
+                    .buttonStyle(FlatButtonStyle(primary: true, compact: true))
+                    .disabled(updater.isBusy)
+                }
+            }
+        }
+        .padding(14)
+        .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AppTheme.hairline, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func updateStatusIcon(for state: AppUpdater.State) -> some View {
+        switch state {
+        case .checking, .updating:
+            ProgressView().controlSize(.small).frame(width: 18, height: 18)
+        case .upToDate:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(AppTheme.positive)
+        case .available:
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(AppTheme.rust)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(AppTheme.warning)
+        case .idle:
+            Image(systemName: "arrow.triangle.2.circlepath.circle")
+                .font(.system(size: 16))
+                .foregroundStyle(AppTheme.sky)
+        }
+    }
+
+    @ViewBuilder
+    private func updateStatusPill(for state: AppUpdater.State) -> some View {
+        switch state {
+        case .idle:
+            EmptyView()
+        case .checking:
+            StatusPill(text: "Checking…", color: AppTheme.sky)
+        case .upToDate:
+            StatusPill(text: "Up to date", color: AppTheme.positive)
+        case .available(let info):
+            StatusPill(text: "\(info.commitsBehind) new", color: AppTheme.rust)
+        case .updating:
+            StatusPill(text: "Updating…", color: AppTheme.sky)
+        case .failed:
+            StatusPill(text: "Error", color: AppTheme.warning)
+        }
+    }
+
+    private func updateStatusDetail(for state: AppUpdater.State) -> String {
+        switch state {
+        case .idle:
+            if let last = coordinator.updater.lastChecked {
+                return "Last checked \(last.formatted(date: .abbreviated, time: .shortened))."
+            }
+            return "Checks GitHub for newer Gary Tools builds."
+        case .checking:
+            return "Checking GitHub for the latest commit…"
+        case .upToDate(let commit):
+            return "Running the latest build (\(String(commit.prefix(7))))."
+        case .available(let info):
+            let count = "\(info.commitsBehind) new \(info.commitsBehind == 1 ? "commit" : "commits") available"
+            if let first = info.summaryLines.first {
+                return "\(count) — \(first)"
+            }
+            return "\(count) (\(info.currentCommit) → \(info.latestCommit))."
+        case .updating(let step):
+            return step
+        case .failed(let message):
+            return message
+        }
+    }
+
     // MARK: - Sleep Guard
 
     private var sleepGuardPane: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: "Daemon Timing", detail: "Changes save automatically and apply within seconds.")
-            StepRow(title: "Check Herdr & lid every", value: "\(coordinator.lidGuard.checkEvery) s",
+            StepRow(title: coordinator.lidGuard.herdrInstalled ? "Check agents & lid every" : "Check status & lid every",
+                    value: "\(coordinator.lidGuard.checkEvery) s",
                     number: Binding(get: { coordinator.lidGuard.checkEvery }, set: { coordinator.lidGuard.checkEvery = $0 }),
                     range: 1...60, step: 1)
             StepRow(title: "Wait after agents stop", value: "\(coordinator.lidGuard.waitBeforeSleep) s",
@@ -193,7 +327,7 @@ struct SettingsView: View {
             Hairline().padding(.vertical, 20)
 
             SectionHeading(title: "Repo Sync")
-            ToggleRow(title: "Auto-pull Developer repos while awake",
+            ToggleRow(title: "Auto-pull git repos while awake",
                       isOn: Binding(get: { coordinator.lidGuard.autoPullRepos }, set: { coordinator.lidGuard.autoPullRepos = $0 }))
             StepRow(title: "Pull interval", value: coordinator.lidGuard.intervalLabel,
                     number: Binding(get: { coordinator.lidGuard.autoPullIntervalMinutes }, set: { coordinator.lidGuard.autoPullIntervalMinutes = $0 }),
@@ -314,34 +448,57 @@ struct SettingsView: View {
     // MARK: - Permissions
 
     private var permissionsPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let perms = coordinator.permissions
+        return VStack(alignment: .leading, spacing: 12) {
+            if let message = perms.actionMessage, !message.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "info.circle").foregroundStyle(AppTheme.sky)
+                    Text(message).font(.system(size: 12)).foregroundStyle(AppTheme.text)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(AppTheme.sky.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
             permissionRow(
                 title: "Accessibility",
-                detail: "Enables direct paste into the previous app (Clipboard) and accurate menu bar icon detection.",
-                ok: coordinator.accessibilityGranted,
-                buttonTitle: "Enable Access…",
-                action: coordinator.requestAccessibility
+                detail: "Enables direct paste into the previous app (Clipboard), window titles in Context Grab, and Finder sidebar helper.",
+                ok: perms.accessibilityGranted,
+                buttonTitle: "Grant Access…",
+                action: { perms.requestAccessibility() }
             )
             permissionRow(
-                title: "Menu Bar Control (macOS 27)",
-                detail: "Uses MenuBarClientCore visibility assertions — hides unpinned third-party icons immediately and restores automatically on quit.",
+                title: "Screen Recording",
+                detail: "Enables screenshots and on-device OCR in Context Grab.",
+                ok: perms.screenRecordingGranted,
+                buttonTitle: "Grant Access…",
+                action: { perms.requestScreenRecording() }
+            )
+            permissionRow(
+                title: "Menu Bar Control",
+                detail: coordinator.arrowBar.visibility.available
+                    ? "Uses native menu bar visibility control — hides unpinned third-party icons immediately and restores automatically on quit."
+                    : "Native menu bar hiding requires macOS 27 or later. Other Gary Tools features work normally.",
                 ok: coordinator.arrowBar.visibility.available,
+                notReadyLabel: "macOS 27+ only",
+                neutralWhenNotReady: true,
                 buttonTitle: nil,
                 action: nil
             )
             permissionRow(
                 title: "Sleep Guard Daemon",
                 detail: coordinator.lidGuard.statusMessage,
-                ok: coordinator.lidGuard.daemonRunning,
-                buttonTitle: "Start Daemon",
-                action: { coordinator.lidGuard.ensureDaemonRunning() }
+                ok: perms.daemonRunning,
+                buttonTitle: "Install / Start Daemon",
+                action: { perms.installOrRepairDaemon() }
             )
             permissionRow(
                 title: "Passwordless pmset Rule",
-                detail: "Allows Sleep Guard to toggle disablesleep 0|1 without prompting for sudo. Installed via scripts/install.sh.",
-                ok: coordinator.lidGuard.sudoersInstalled,
-                buttonTitle: nil,
-                action: nil
+                detail: "Allows Keep Awake and Sleep Guard to keep your Mac awake with the lid closed without prompting for sudo.",
+                ok: perms.pmsetRuleInstalled,
+                buttonTitle: "Allow pmset…",
+                action: { perms.installPmsetRule() }
             )
 
             Hairline().padding(.vertical, 10)
@@ -356,6 +513,7 @@ struct SettingsView: View {
                 Spacer()
                 Button("Refresh Status") {
                     coordinator.refreshAll()
+                    coordinator.permissions.refresh()
                     coordinator.lidGuard.checkEnvironment()
                     coordinator.arrowBar.refresh()
                 }
@@ -366,23 +524,41 @@ struct SettingsView: View {
             coordinator.refreshAll()
             coordinator.refreshSystemState()
             coordinator.lidGuard.checkEnvironment()
+            coordinator.permissions.startLivePolling()
+        }
+        .onDisappear {
+            coordinator.permissions.stopLivePolling()
         }
     }
 
-    private func permissionRow(title: String, detail: String, ok: Bool, buttonTitle: String?, action: (() -> Void)?) -> some View {
+    private func permissionRow(
+        title: String,
+        detail: String,
+        ok: Bool,
+        notReadyLabel: String = "Not Installed",
+        neutralWhenNotReady: Bool = false,
+        buttonTitle: String?,
+        action: (() -> Void)?
+    ) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(ok ? AppTheme.positive : AppTheme.warning)
+            Image(systemName: ok ? "checkmark.circle.fill" : (neutralWhenNotReady ? "minus.circle.fill" : "exclamationmark.circle.fill"))
+                .foregroundStyle(ok ? AppTheme.positive : (neutralWhenNotReady ? AppTheme.muted : AppTheme.warning))
                 .font(.system(size: 16))
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.system(size: 13, weight: .medium))
-                Text(detail).font(.system(size: 11.5)).foregroundStyle(AppTheme.secondary)
+                Text(detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(AppTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             if let buttonTitle, let action, !ok {
                 Button(buttonTitle, action: action).buttonStyle(FlatButtonStyle(primary: true, compact: true))
             } else {
-                StatusPill(text: ok ? "Ready" : "Not Installed", color: ok ? AppTheme.positive : AppTheme.warning)
+                StatusPill(
+                    text: ok ? "Ready" : notReadyLabel,
+                    color: ok ? AppTheme.positive : (neutralWhenNotReady ? AppTheme.muted : AppTheme.warning)
+                )
             }
         }
         .padding(14)

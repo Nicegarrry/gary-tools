@@ -21,9 +21,16 @@ struct MainWindowView: View {
                         case .menuBar:
                             MenuBarOrganizerView(model: coordinator.arrowBar)
                         case .repoSync:
-                            RepoSyncView(lidGuard: coordinator.lidGuard)
+                            RepoSyncView(
+                                lidGuard: coordinator.lidGuard,
+                                gitSetup: coordinator.gitSetup,
+                                onOpenSetup: coordinator.openSetupWizard
+                            )
                         case .macSettings:
-                            MacSettingsView(model: coordinator.macSettings, developerDir: coordinator.lidGuard.autoPullDir)
+                            MacSettingsView(
+                                model: coordinator.macSettings,
+                                developerDir: coordinator.lidGuard.autoPullDirs.first ?? coordinator.lidGuard.autoPullDir
+                            )
                         }
                     }
                     .padding(.horizontal, 32)
@@ -112,7 +119,7 @@ struct MainWindowView: View {
                 GaryBrandMark(size: 30)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Gary Tools").font(.system(size: 14, weight: .semibold))
-                    Text("v\(coordinator.appVersion)")
+                    Text(sidebarVersionText)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(AppTheme.muted)
                 }
@@ -126,6 +133,28 @@ struct MainWindowView: View {
             }
 
             Spacer()
+
+            if coordinator.updater.hasUpdate {
+                Button {
+                    coordinator.updater.installUpdate()
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12))
+                        Text("Update Available")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(AppTheme.rust, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(coordinator.updater.isBusy)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+            }
 
             Hairline().padding(.horizontal, 18).padding(.bottom, 10)
 
@@ -165,6 +194,11 @@ struct MainWindowView: View {
         .frame(width: 210)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(AppTheme.deepNavy.opacity(0.35))
+    }
+
+    private var sidebarVersionText: String {
+        let shortCommit = String(coordinator.appBuildCommit.prefix(7))
+        return shortCommit.isEmpty ? "v\(coordinator.appVersion)" : "v\(coordinator.appVersion) · \(shortCommit)"
     }
 
     private func sidebarRow(_ section: MainSection) -> some View {

@@ -3,6 +3,10 @@ import SwiftUI
 struct SleepGuardView: View {
     @ObservedObject var lidGuard: LidGuardModel
 
+    private var showAgentWatcherFirst: Bool {
+        lidGuard.herdrInstalled || lidGuard.enabled
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Live status strip
@@ -27,43 +31,13 @@ struct SleepGuardView: View {
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AppTheme.hairline, lineWidth: 1))
             .padding(.bottom, 22)
 
-            SectionHeading(title: "Herdr Agents", detail: "Keep the Mac awake even with the lid closed while agents are working.")
-            ToggleRow(
-                title: "Keep Mac awake while agents are working",
-                detail: "Screen locks when the lid closes; Mac sleeps automatically once agents finish.",
-                isOn: $lidGuard.enabled
-            )
-            StepRow(
-                title: "Stay awake while waiting for your input",
-                value: lidGuard.waitForInput == 0 ? "Don’t wait" : "\(lidGuard.waitForInput) min",
-                number: $lidGuard.waitForInput,
-                range: 0...10,
-                step: 1
-            )
-
-            Hairline().padding(.vertical, 20)
-
-            SectionHeading(title: "Keep Awake", detail: "Like caffeinate — keeps the Mac and screen awake regardless of agent activity. Heat cut-off still applies.")
-            ToggleRow(
-                title: "Keep the Mac on no matter what",
-                detail: lidGuard.keepAwakeStatus,
-                isOn: Binding(
-                    get: { lidGuard.keepAwake },
-                    set: { $0 ? lidGuard.startKeepAwake(until: nil) : lidGuard.stopKeepAwake() }
-                )
-            )
-            HStack(spacing: 8) {
-                Button("1 hour") { lidGuard.startKeepAwake(until: Date().addingTimeInterval(3600)) }
-                    .buttonStyle(FlatButtonStyle(compact: true))
-                Button("3 hours") { lidGuard.startKeepAwake(until: Date().addingTimeInterval(3 * 3600)) }
-                    .buttonStyle(FlatButtonStyle(compact: true))
-                Button("Until 7am") { lidGuard.startKeepAwake(until: next7am()) }
-                    .buttonStyle(FlatButtonStyle(compact: true))
-                Button("Until turned off") { lidGuard.startKeepAwake(until: nil) }
-                    .buttonStyle(FlatButtonStyle(compact: true))
-                Spacer()
+            if showAgentWatcherFirst {
+                agentWatcherSection
+                Hairline().padding(.vertical, 20)
+                keepAwakeSection
+            } else {
+                keepAwakeSection
             }
-            .padding(.top, 10)
 
             Hairline().padding(.vertical, 20)
 
@@ -92,6 +66,87 @@ struct SleepGuardView: View {
             ToggleRow(title: "Lock screen when the lid closes", isOn: $lidGuard.lockOnLidClose)
             ToggleRow(title: "Leave alone with external monitor", detail: "Desk setup with lid shut: never lock or force sleep.", isOn: $lidGuard.leaveAloneWithMonitor)
             ToggleRow(title: "Notify when put to sleep", isOn: $lidGuard.notifyOnSleep)
+
+            if !showAgentWatcherFirst {
+                Hairline().padding(.vertical, 20)
+                optionalAgentWatcherNote
+            }
+        }
+    }
+
+    private var agentWatcherSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(
+                title: "Agent Watcher (Herdr)",
+                detail: "Keep the Mac awake even with the lid closed while coding agents are working."
+            )
+            ToggleRow(
+                title: "Keep Mac awake while agents are working",
+                detail: "Screen locks when the lid closes; Mac sleeps automatically once agents finish.",
+                isOn: $lidGuard.enabled
+            )
+            StepRow(
+                title: "Stay awake while waiting for your input",
+                value: lidGuard.waitForInput == 0 ? "Don’t wait" : "\(lidGuard.waitForInput) min",
+                number: $lidGuard.waitForInput,
+                range: 0...10,
+                step: 1
+            )
+        }
+    }
+
+    private var keepAwakeSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(
+                title: "Keep Awake",
+                detail: "Like caffeinate — keeps the Mac and screen awake on demand. Safety and heat cut-offs still apply."
+            )
+            ToggleRow(
+                title: "Keep the Mac on no matter what",
+                detail: lidGuard.keepAwakeStatus,
+                isOn: Binding(
+                    get: { lidGuard.keepAwake },
+                    set: { $0 ? lidGuard.startKeepAwake(until: nil) : lidGuard.stopKeepAwake() }
+                )
+            )
+            HStack(spacing: 8) {
+                Button("1 hour") { lidGuard.startKeepAwake(until: Date().addingTimeInterval(3600)) }
+                    .buttonStyle(FlatButtonStyle(compact: true))
+                Button("3 hours") { lidGuard.startKeepAwake(until: Date().addingTimeInterval(3 * 3600)) }
+                    .buttonStyle(FlatButtonStyle(compact: true))
+                Button("Until 7am") { lidGuard.startKeepAwake(until: next7am()) }
+                    .buttonStyle(FlatButtonStyle(compact: true))
+                Button("Until turned off") { lidGuard.startKeepAwake(until: nil) }
+                    .buttonStyle(FlatButtonStyle(compact: true))
+                Spacer()
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    private var optionalAgentWatcherNote: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(
+                title: "Agent Watcher (Herdr)",
+                detail: "Optional: install Herdr to automatically hold the Mac awake while coding agents work, then let it sleep once they finish."
+            )
+            HStack(spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 14))
+                    .foregroundStyle(AppTheme.muted)
+                Text("Herdr wasn’t detected on this Mac. Keep Awake above works anytime without it.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Enable Anyway") {
+                    lidGuard.enabled = true
+                }
+                .buttonStyle(FlatButtonStyle(compact: true))
+            }
+            .padding(14)
+            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AppTheme.hairline, lineWidth: 1))
         }
     }
 }

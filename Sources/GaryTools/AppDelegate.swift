@@ -60,9 +60,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var arrowItem: NSStatusItem?
     private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var setupWizardWindow: NSWindow?
     private var clipboardPanel: ClipboardPanel!
     private var recoveryPanel: NSPanel?
     private var auxiliaryWindows: [NSWindow] = []
+    private var appMenuUpdateItem: NSMenuItem?
 
     private var previousApp: NSRunningApplication?
     private var keyMonitor: Any?
@@ -81,6 +83,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.terminate(nil)
             return
         }
+
+        // Capture onboarding state BEFORE DataMigration or AppCoordinator creates settings.conf.
+        let shouldShowOnboarding = OnboardingDetector.shouldShowOnLaunch()
 
         // Proper macOS application: always in Dock with full top menu bar.
         NSApp.setActivationPolicy(.regular)
@@ -124,7 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         clipboardMonitor?.start()
 
         if !ProcessInfo.processInfo.arguments.contains("--background") {
-            openMainWindow()
+            if shouldShowOnboarding {
+                openSetupWizardWindow()
+            } else {
+                openMainWindow()
+            }
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -132,6 +141,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if self.coordinator.arrowBar.enabled && self.coordinator.arrowBar.visibility.available && self.coordinator.arrowBar.startCollapsed {
                 self.coordinator.arrowBar.applyCollapsed()
             }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.coordinator.updater.checkForUpdates(silent: true)
         }
     }
 
@@ -152,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === settingsWindow { settingsWindow = nil }
+        if window === setupWizardWindow { setupWizardWindow = nil }
         if window === mainWindow && coordinator.arrowBar.editing {
             coordinator.arrowBar.finishEditing()
         }
@@ -163,6 +177,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func wireCoordinatorActions() {
         coordinator.openClipboardBrowser = { [weak self] in self?.toggleClipboardBrowser() }
         coordinator.openSettings = { [weak self] pane in self?.openSettingsWindow(pane: pane ?? .general) }
+        coordinator.openSetupWizard = { [weak self] in self?.openSetupWizardWindow() }
+        coordinator.checkForUpdates = { [weak self] in self?.coordinator.updater.checkForUpdates(silent: false) }
         coordinator.pasteClip = { [weak self] id, plain in self?.pasteClip(id, plain: plain) }
         coordinator.copyClip = { [weak self] id, plain in self?.copyClip(id, plain: plain) }
         coordinator.previewClip = { [weak self] id in self?.previewClip(id) }
@@ -176,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         coordinator.toggleClipboardPause = { [weak self] in self?.toggleClipboardPause() }
         coordinator.eraseClipboardHistory = { [weak self] in self?.eraseClipboardHistory() }
         coordinator.reconfigureHotKeys = { [weak self] in self?.configureHotKeys() }
-        coordinator.requestAccessibility = { [weak self] in self?.requestAccessibility() }
+        coordinator.requestAccessibility = { [weak self] in self?.coordinator.permissions.requestAccessibility() }
     }
 
     private func setupHotKeys() {
@@ -184,7 +200,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotKeys.onPasteStack = { [weak self] in self?.pasteStack(allText: false) }
         hotKeys.onRevealMenuBar = { [weak self] in self?.coordinator.arrowBar.revealAll() }
         hotKeys.onContextGrab = { [weak self] in self?.contextGrabber.grab() }
-        contextGrabber.developerDir = { [weak self] in self?.coordinator.lidGuard.autoPullDir ?? "~/Developer" }
+        contextGrabber.developerDir = { [weak self] in
+            self?.coordinator.lidGuard.autoPullDirs.first
+                ?? self?.coordinator.lidGuard.autoPullDir
+                ?? RepoSyncConfig.defaultFolder
+        }
         contextGrabber.onError = { [weak self] message in self?.showAlert("Gary Tools — Context Grab", detail: message) }
         configureHotKeys()
     }
@@ -239,6 +259,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.addObserver(forName: .settingsChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshUI() }
         }
+
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.coordinator.permissions.refresh()
+                self.coordinator.refreshSystemState()
+                self.coordinator.gitSetup.refresh()
+                self.coordinator.lidGuard.checkEnvironment()
+            }
+            .store(in: &subscriptions)
+
+        coordinator.updater.$state
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateAppMenuUpdateItem()
+            }
+            .store(in: &subscriptions)
     }
 
     private func setupTimers() {
@@ -267,8 +305,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appRoot = NSMenuItem()
         let appMenu = NSMenu(title: "Gary Tools")
         appMenu.addItem(withTitle: "About Gary Tools", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let updateItem = menuItem(updateMenuTitle(), #selector(menuCheckOrInstallUpdate), "")
+        appMenuUpdateItem = updateItem
+        appMenu.addItem(updateItem)
         appMenu.addItem(.separator())
         appMenu.addItem(menuItem("Settings…", #selector(menuOpenSettings), ","))
+        appMenu.addItem(menuItem("Run Setup Wizard…", #selector(menuOpenSetupWizard), ""))
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Gary Tools", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(menuItem("Quit Gary Tools", #selector(quitApp), "q"))
@@ -363,9 +405,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(.separator())
 
         // Sleep Guard quick actions
-        let sleepToggle = menuItem("Sleep Guard (Watch Agents)", #selector(menuToggleSleepGuard), "")
-        sleepToggle.state = lg.enabled ? .on : .off
-        menu.addItem(sleepToggle)
+        if lg.herdrInstalled || lg.enabled {
+            let sleepToggle = menuItem("Sleep Guard (Watch Agents)", #selector(menuToggleSleepGuard), "")
+            sleepToggle.state = lg.enabled ? .on : .off
+            menu.addItem(sleepToggle)
+        }
 
         let keepAwakeItem = NSMenuItem(
             title: lg.keepAwake ? "Keep Awake (\(lg.keepAwakeStatus))" : "Keep Awake",
@@ -397,6 +441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(syncInfo)
 
         menu.addItem(.separator())
+        menu.addItem(menuItem(updateMenuTitle(), #selector(menuCheckOrInstallUpdate), ""))
         menu.addItem(menuItem("Settings…", #selector(menuOpenSettings), ","))
         menu.addItem(menuItem("Open Log", #selector(menuOpenLog), ""))
         menu.addItem(.separator())
@@ -571,6 +616,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsWindow = w
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
+    }
+
+    private func openSetupWizardWindow() {
+        hideClipboardBrowser()
+        if let setupWizardWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            setupWizardWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        w.title = "Gary Tools Setup"
+        AppTheme.prepare(w)
+        w.contentView = NSHostingView(rootView: SetupWizardView(coordinator: coordinator, onFinish: { [weak self] in
+            self?.finishSetupWizard()
+        }))
+        w.setContentSize(NSSize(width: 720, height: 580))
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.center()
+        setupWizardWindow = w
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+    }
+
+    private func finishSetupWizard() {
+        OnboardingDetector.markCompleted()
+        setupWizardWindow?.close()
+        setupWizardWindow = nil
+        openMainWindow()
+    }
+
+    private func updateMenuTitle() -> String {
+        coordinator.updater.hasUpdate ? "Update Available — Install…" : "Check for Updates…"
+    }
+
+    private func updateAppMenuUpdateItem() {
+        appMenuUpdateItem?.title = updateMenuTitle()
     }
 
     // MARK: - Clipboard Floating Browser & Delivery
@@ -789,14 +876,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Auxiliary Clipboard Dialogs
 
-    private func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
     private func previewClip(_ id: UUID) {
         let store = coordinator.clipboardStore
         guard let clip = store.clips.first(where: { $0.id == id }) else { return }
@@ -899,6 +978,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func menuOpenMainWindow() { openMainWindow() }
     @objc private func menuOpenSettings() { openSettingsWindow(pane: .general) }
+    @objc private func menuOpenSetupWizard() { openSetupWizardWindow() }
+    @objc private func menuCheckOrInstallUpdate() {
+        openSettingsWindow(pane: .general)
+        if coordinator.updater.hasUpdate {
+            coordinator.updater.installUpdate()
+        } else {
+            coordinator.updater.checkForUpdates(silent: false)
+        }
+    }
     @objc private func menuOpenLog() { coordinator.lidGuard.openLog() }
     @objc private func menuToggleClipboard() { toggleClipboardBrowser() }
     @objc private func menuToggleClipPause() { toggleClipboardPause() }
